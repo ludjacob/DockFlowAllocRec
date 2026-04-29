@@ -1,4 +1,3 @@
-
 // ==UserScript==
 // @name         DockFlow Allocation Recommender
 // @namespace    http://tampermonkey.net/
@@ -50,8 +49,7 @@
         '.alloc-rec-list-badge.up{color:#b91c1c}',
         '.alloc-rec-list-badge.down{color:#065f46}',
         '.alloc-rec-list-badge.same{color:#3730a3}'
-    ].join('
-');
+    ].join('');
     document.head.appendChild(style);
 
     var CONFIG_KEY = 'dockflow_alloc_config';
@@ -81,8 +79,7 @@
         '    }',
         '  }',
         '}'
-    ].join('
-');
+    ].join('');
 
     function getConfig() {
         try {
