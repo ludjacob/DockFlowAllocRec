@@ -11,7 +11,7 @@
 // @homepageURL  https://github.com/ludjacob/DockFlowAllocRec
 // @supportURL   https://github.com/ludjacob/DockFlowAllocRec/issues
 // @downloadURL  https://github.com/ludjacob/DockFlowAllocRec/raw/main/DockFlowAllocRec.user.js
-// @updateURL    https://github.com/Yludjacob/DockFlowAllocRec/raw/main/DockFlowAllocRec.user.js
+// @updateURL    https://github.com/ludjacob/DockFlowAllocRec/raw/main/DockFlowAllocRec.user.js
 // ==/UserScript==
 
 (function() {
