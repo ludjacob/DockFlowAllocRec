@@ -675,14 +675,15 @@
 
 
 
-        // =====================================================
-    // WORKCELL WIP RANKING MODULE v1.0
-    // - Color-coded inline badges next to HEALTHY status
-    // - Sidebar panel docked below Command Center, starts expanded
-    // - Scoped to /wc page only
+    // =====================================================
+    // WORKCELL WIP RANKING MODULE v1.1
+    // - Color-coded inline badges next to HEALTHY status (on /wc only)
+    // - Sidebar panel docked below Command Center (every page)
+    // - Live scrape on /wc, sessionStorage cache on other pages
     // =====================================================
 
     var PANEL_ID = 'alloc-rec-wc-rank-panel';
+    var WC_STORAGE_KEY = 'alloc_rec_wc_ranking';
 
     function rankColor(rank, total) {
         var pct = total <= 1 ? 1 : (rank - 1) / (total - 1);
@@ -849,6 +850,48 @@
         return results;
     }
 
+    // --- sessionStorage helpers ---
+    function saveWCData(data, interval) {
+        var serializable = [];
+        for (var i = 0; i < data.length; i++) {
+            serializable.push({
+                name: data[i].name,
+                totalWIP: data[i].totalWIP,
+                arcCount: data[i].arcCount,
+                unknownCount: data[i].unknownCount
+            });
+        }
+        var payload = {
+            data: serializable,
+            interval: interval,
+            timestamp: Date.now()
+        };
+        try {
+            sessionStorage.setItem(WC_STORAGE_KEY, JSON.stringify(payload));
+        } catch (e) {
+            console.warn('[AllocRec] Could not save WC data to sessionStorage', e);
+        }
+    }
+
+    function loadWCData() {
+        try {
+            var raw = sessionStorage.getItem(WC_STORAGE_KEY);
+            if (!raw) return null;
+            return JSON.parse(raw);
+        } catch (e) {
+            return null;
+        }
+    }
+
+    function timeAgo(ts) {
+        var diff = Math.floor((Date.now() - ts) / 1000);
+        if (diff < 60) return diff + 's ago';
+        var min = Math.floor(diff / 60);
+        if (min < 60) return min + ' min ago';
+        var hr = Math.floor(min / 60);
+        return hr + ' hr ' + (min % 60) + ' min ago';
+    }
+
     function renderInlineBadges(data) {
         var old = document.querySelectorAll('.alloc-wc-inline');
         for (var i = 0; i < old.length; i++) old[i].remove();
@@ -905,7 +948,7 @@
 
     var panelMinimized = false;
 
-    function renderWCRankPanel(data, interval) {
+    function renderWCRankPanel(data, interval, timestamp) {
         var existing = document.getElementById(PANEL_ID);
         if (existing) {
             panelMinimized = existing.classList.contains('minimized');
@@ -959,7 +1002,11 @@
         for (var i = 0; i < data.length; i++) totalAll += data[i].totalWIP;
         var footer = document.createElement('div');
         footer.className = 'wc-rank-footer';
-        footer.textContent = data.length + ' workcells \u2022 ' + totalAll.toLocaleString() + ' total \u2022 ' + formatInterval(interval);
+        var footerText = data.length + ' workcells \u2022 ' + totalAll.toLocaleString() + ' total \u2022 ' + formatInterval(interval);
+        if (timestamp) {
+            footerText += ' \u2022 updated ' + timeAgo(timestamp);
+        }
+        footer.textContent = footerText;
         panel.appendChild(footer);
 
         var insertAfter = cmdCenter.closest('li') || cmdCenter.closest('[class*="item"]') || cmdCenter;
@@ -981,41 +1028,59 @@
             panel.classList.toggle('minimized');
             document.getElementById('wc-rank-toggle-btn').textContent = panelMinimized ? '\u25B6' : '\u25BC';
         });
+
+        // Auto-refresh the "updated X ago" text every 30s
+        if (timestamp) {
+            var footerRefresh = setInterval(function() {
+                if (!document.getElementById(PANEL_ID)) {
+                    clearInterval(footerRefresh);
+                    return;
+                }
+                footer.textContent = data.length + ' workcells \u2022 ' + totalAll.toLocaleString() + ' total \u2022 ' + formatInterval(interval) + ' \u2022 updated ' + timeAgo(timestamp);
+            }, 30000);
+        }
     }
 
     function runWorkcellRanking() {
-        if (!isWorkcellsPage()) return;
+        if (isWorkcellsPage()) {
+            // Live scrape on /wc page
+            var interval = getCurrentInterval();
+            var data = scrapeWorkcellWIP();
 
-        var interval = getCurrentInterval();
-        var data = scrapeWorkcellWIP();
+            if (data.length === 0) return;
 
-        if (data.length === 0) return;
+            console.log('[AllocRec] WC Ranking LIVE | interval: ' + interval + ' | workcells: ' + data.length);
+            for (var i = 0; i < data.length; i++) {
+                console.log('[AllocRec]   ' + data[i].name + ': ' + data[i].totalWIP + ' WIP (' + data[i].arcCount + ' arcs, ' + data[i].unknownCount + ' unknown)');
+            }
 
-        console.log('[AllocRec] WC Ranking | interval: ' + interval + ' | workcells: ' + data.length);
-        for (var i = 0; i < data.length; i++) {
-            console.log('[AllocRec]   ' + data[i].name + ': ' + data[i].totalWIP + ' WIP (' + data[i].arcCount + ' arcs, ' + data[i].unknownCount + ' unknown)');
+            saveWCData(data, interval);
+            renderInlineBadges(data);
+            renderWCRankPanel(data, interval, null);
+        } else {
+            // Other pages: load from sessionStorage
+            var cached = loadWCData();
+            if (!cached || !cached.data || cached.data.length === 0) {
+                console.log('[AllocRec] WC Ranking | no cached data available');
+                return;
+            }
+
+            console.log('[AllocRec] WC Ranking CACHED | interval: ' + cached.interval + ' | workcells: ' + cached.data.length + ' | age: ' + timeAgo(cached.timestamp));
+            renderWCRankPanel(cached.data, cached.interval, cached.timestamp);
         }
-
-        renderInlineBadges(data);
-        renderWCRankPanel(data, interval);
     }
 
     var lastWcUrl = location.href;
     function watchWcChanges() {
         if (location.href !== lastWcUrl) {
             lastWcUrl = location.href;
-            if (isWorkcellsPage()) {
-                setTimeout(runWorkcellRanking, 2000);
-            }
+            setTimeout(runWorkcellRanking, 2000);
         }
     }
     setInterval(watchWcChanges, 800);
 
-    // --- Self-contained init for workcell module ---
-    // Does NOT wrap or modify the base script's run/cleanup functions
-    if (isWorkcellsPage()) {
-        setTimeout(runWorkcellRanking, 3000);
-    }
+    // Self-contained init — does not wrap base script's run/cleanup
+    setTimeout(runWorkcellRanking, 3000);
 
 
     init();
