@@ -17,7 +17,7 @@
     'use strict';
 
     var path = window.location.pathname;
-    if (path.indexOf('/oba') === -1) return;
+    if (path.indexOf('/oba') === -1 && path.indexOf('/wc') === -1) return;
 
     console.log('[AllocRec] v3.2 loaded | path: ' + path);
 
@@ -670,6 +670,381 @@
             setTimeout(init, 1000);
         }
     }).observe(document, {subtree: true, childList: true});
+
+
+
+
+
+    // =====================================================
+    // WORKCELL WIP RANKING MODULE
+    // - Color-coded inline badges next to cvM% workcell names
+    // - Sidebar panel docked below "Command Center", starts expanded
+    // - Reacts to interval changes via URL query param
+    // =====================================================
+
+    var PANEL_ID = 'alloc-rec-wc-rank-panel';
+
+    function rankColor(rank, total) {
+        var pct = total <= 1 ? 1 : (rank - 1) / (total - 1);
+        if (pct <= 0.2) return {bg:'#fde8e8',fg:'#b91c1c',bd:'#f87171'};
+        if (pct <= 0.4) return {bg:'#fef3c7',fg:'#92400e',bd:'#fbbf24'};
+        if (pct <= 0.6) return {bg:'#eef2ff',fg:'#3730a3',bd:'#a5b4fc'};
+        if (pct <= 0.8) return {bg:'#d1fae5',fg:'#065f46',bd:'#6ee7b7'};
+        return {bg:'#f1f5f9',fg:'#475569',bd:'#cbd5e1'};
+    }
+
+    var wcStyle = document.createElement('style');
+    wcStyle.textContent = [
+        '.alloc-wc-inline{display:inline-flex;align-items:center;margin-left:8px;font-size:11px;font-weight:700;padding:1px 7px;border-radius:10px;vertical-align:middle;cursor:default;border-width:1px;border-style:solid}',
+        '#' + PANEL_ID + '{margin:8px 10px;background:#fff;border:1px solid #e2e8f0;border-radius:10px;box-shadow:0 2px 8px rgba(0,0,0,0.06);font-family:-apple-system,BlinkMacSystemFont,Segoe UI,Roboto,sans-serif;font-size:12px;overflow:hidden}',
+        '#' + PANEL_ID + '.minimized .wc-rank-body,#' + PANEL_ID + '.minimized .wc-rank-footer{display:none}',
+        '#' + PANEL_ID + ' .wc-rank-header{display:flex;align-items:center;gap:6px;padding:8px 10px;border-bottom:1px solid #e2e8f0;background:#f8fafc;cursor:pointer;user-select:none}',
+        '#' + PANEL_ID + '.minimized .wc-rank-header{border-bottom:none}',
+        '#' + PANEL_ID + ' .wc-rank-header h4{margin:0;font-size:12px;color:#1e293b;flex:1}',
+        '#' + PANEL_ID + ' .wc-rank-interval{font-size:10px;color:#6366f1;font-weight:600;background:#eef2ff;padding:1px 5px;border-radius:8px}',
+        '#' + PANEL_ID + ' .wc-rank-toggle{cursor:pointer;background:none;border:none;font-size:11px;color:#94a3b8;padding:0;line-height:1}',
+        '#' + PANEL_ID + ' .wc-rank-toggle:hover{color:#475569}',
+        '#' + PANEL_ID + ' .wc-rank-body{padding:4px 0;overflow-y:auto;max-height:45vh}',
+        '#' + PANEL_ID + ' .wc-rank-row{display:flex;align-items:center;padding:3px 10px;gap:5px;border-bottom:1px solid #f8fafc}',
+        '#' + PANEL_ID + ' .wc-rank-row:last-child{border-bottom:none}',
+        '#' + PANEL_ID + ' .wc-rank-name{flex:1;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-size:10px}',
+        '#' + PANEL_ID + ' .wc-rank-val{font-weight:700;min-width:30px;text-align:right;font-size:10px}',
+        '#' + PANEL_ID + ' .wc-rank-bar-wrap{width:40px;height:4px;background:#f1f5f9;border-radius:2px;overflow:hidden;flex-shrink:0}',
+        '#' + PANEL_ID + ' .wc-rank-bar{height:100%;border-radius:2px}',
+        '#' + PANEL_ID + ' .wc-rank-footer{padding:4px 10px;border-top:1px solid #e2e8f0;font-size:9px;color:#94a3b8;text-align:center}'
+    ].join('');
+    document.head.appendChild(wcStyle);
+
+    function isWorkcellsPage() {
+        var p = window.location.pathname;
+        if (/\/wc(\?|$)/i.test(p) || /\/workcells(\?|$)/i.test(p)) return true;
+        var h2s = document.querySelectorAll('h2');
+        for (var i = 0; i < h2s.length; i++) {
+            if ((/workcells\s*\(/i).test(h2s[i].textContent)) return true;
+        }
+        return false;
+    }
+
+    function getCurrentInterval() {
+        try {
+            var params = new URLSearchParams(window.location.search);
+            var cfg = params.get('workcelllandingConfig');
+            if (cfg) {
+                var parsed = JSON.parse(cfg);
+                if (parsed.interval) return parsed.interval;
+            }
+        } catch (e) {}
+        var btns = document.querySelectorAll('button, [role="button"], [class*="select"], [class*="dropdown"]');
+        var intervals = ['MIN_15', 'MIN_30', 'HR_1', 'HR_2', 'HR_4', 'HR_8', 'HR_24'];
+        for (var i = 0; i < btns.length; i++) {
+            var txt = btns[i].textContent.trim().replace(/[\s]+/g, '_').toUpperCase();
+            for (var j = 0; j < intervals.length; j++) {
+                if (txt === intervals[j] || txt.indexOf(intervals[j]) !== -1) return intervals[j];
+            }
+        }
+        return 'HR_1';
+    }
+
+    function formatInterval(iv) {
+        var map = {
+            'MIN_15': '15 min', 'MIN_30': '30 min',
+            'HR_1': '1 hr', 'HR_2': '2 hr', 'HR_4': '4 hr',
+            'HR_8': '8 hr', 'HR_24': '24 hr'
+        };
+        return map[iv] || iv;
+    }
+
+    function findSidebarInsertPoint() {
+        var navItems = document.querySelectorAll('nav a, nav li, [class*="sidebar"] a, [class*="sidebar"] li, [class*="nav"] a, [class*="nav"] li, [role="navigation"] a, [role="navigation"] li');
+        for (var i = 0; i < navItems.length; i++) {
+            if (/command\s*center/i.test(navItems[i].textContent.trim())) {
+                return navItems[i];
+            }
+        }
+        var all = document.querySelectorAll('a, li, span, div');
+        for (var i = 0; i < all.length; i++) {
+            var el = all[i];
+            if (el.children.length < 3 && /^command\s*center$/i.test(el.textContent.trim())) {
+                return el;
+            }
+        }
+        return null;
+    }
+
+    function scrapeWorkcellWIP() {
+        var results = [];
+        var rows = document.querySelectorAll('tr');
+
+        for (var r = 0; r < rows.length; r++) {
+            var cells = rows[r].querySelectorAll('td');
+            if (cells.length < 2) continue;
+
+            var wcName = '';
+            var nameCell = null;
+            for (var c = 0; c < cells.length; c++) {
+                var cell = cells[c];
+                var link = cell.querySelector('a');
+                var t = link ? link.textContent.trim() : '';
+                if (!t) {
+                    var firstChild = cell.firstChild;
+                    if (firstChild && firstChild.nodeType === Node.TEXT_NODE) {
+                        t = firstChild.textContent.trim();
+                    } else if (firstChild && firstChild.nodeType === Node.ELEMENT_NODE && !firstChild.classList.contains('alloc-wc-inline')) {
+                        t = firstChild.textContent.trim();
+                    }
+                }
+                if (/^cvM/i.test(t) && t.length < 40) {
+                    wcName = t;
+                    nameCell = cell;
+                    break;
+                }
+            }
+            if (!wcName) continue;
+
+            var arcCell = null;
+            for (var c = cells.length - 1; c >= 0; c--) {
+                if (/[A-Z]{2,}\d*_(TOTE|CASE)/i.test(cells[c].textContent)) {
+                    arcCell = cells[c];
+                    break;
+                }
+            }
+            if (!arcCell) continue;
+
+            var totalWIP = 0;
+            var arcCount = 0;
+            var unknownCount = 0;
+            var arcDetails = [];
+
+            var walker = document.createTreeWalker(arcCell, NodeFilter.SHOW_TEXT, null, false);
+            var textNodes = [];
+            while (walker.nextNode()) {
+                var val = walker.currentNode.textContent.trim();
+                if (val.length > 0) textNodes.push(val);
+            }
+
+            for (var t = 0; t < textNodes.length; t++) {
+                var txt = textNodes[t];
+                if (/^\d+$/.test(txt)) {
+                    var wipVal = parseInt(txt);
+                    totalWIP += wipVal;
+                    arcCount++;
+                    if (t > 0) arcDetails.push({ arc: textNodes[t - 1], wip: wipVal });
+                } else if (/^unknown$/i.test(txt)) {
+                    unknownCount++;
+                    if (t > 0) arcDetails.push({ arc: textNodes[t - 1], wip: 'UNKNOWN' });
+                }
+            }
+
+            results.push({
+                name: wcName,
+                nameCell: nameCell,
+                totalWIP: totalWIP,
+                arcCount: arcCount,
+                unknownCount: unknownCount,
+                arcDetails: arcDetails
+            });
+        }
+
+        results.sort(function(a, b) { return b.totalWIP - a.totalWIP; });
+        return results;
+    }
+
+            function renderInlineBadges(data) {
+        var old = document.querySelectorAll('.alloc-wc-inline');
+        for (var i = 0; i < old.length; i++) old[i].remove();
+
+        var total = data.length;
+        for (var i = 0; i < data.length; i++) {
+            var d = data[i];
+            if (!d.nameCell) continue;
+
+            var rc = rankColor(i + 1, total);
+            var badge = document.createElement('span');
+            badge.className = 'alloc-wc-inline';
+            badge.style.background = rc.bg;
+            badge.style.color = rc.fg;
+            badge.style.borderColor = rc.bd;
+
+            var unknownTip = d.unknownCount > 0 ? ' + ' + d.unknownCount + ' unknown' : '';
+            badge.title = d.totalWIP.toLocaleString() + ' WIP across ' + d.arcCount + ' arcs' + unknownTip;
+            badge.textContent = d.totalWIP.toLocaleString();
+
+            // Find the row and the status cell
+            var row = d.nameCell.closest('tr');
+            if (!row) continue;
+
+            var statusCell = null;
+            var cells = row.querySelectorAll('td');
+            for (var c = 0; c < cells.length; c++) {
+                if (/HEALTHY|WARN|INFO/i.test(cells[c].textContent.trim()) && cells[c].textContent.trim().length < 20) {
+                    statusCell = cells[c];
+                    break;
+                }
+            }
+
+            if (statusCell) {
+                // Force the status cell to lay out inline so badge sits beside text
+                statusCell.style.whiteSpace = 'nowrap';
+                // Find the last child element (icon + text span) and insert after it
+                var lastEl = statusCell.lastElementChild || statusCell;
+                if (lastEl === statusCell) {
+                    // Wrap existing text in a span to keep it inline
+                    var wrapper = document.createElement('span');
+                    wrapper.style.display = 'inline-flex';
+                    wrapper.style.alignItems = 'center';
+                    wrapper.style.gap = '6px';
+                    while (statusCell.firstChild) {
+                        wrapper.appendChild(statusCell.firstChild);
+                    }
+                    wrapper.appendChild(badge);
+                    statusCell.appendChild(wrapper);
+                } else {
+                    // Wrap the cell contents + badge in an inline-flex container
+                    var wrapper = document.createElement('span');
+                    wrapper.style.display = 'inline-flex';
+                    wrapper.style.alignItems = 'center';
+                    wrapper.style.gap = '6px';
+                    while (statusCell.firstChild) {
+                        wrapper.appendChild(statusCell.firstChild);
+                    }
+                    wrapper.appendChild(badge);
+                    statusCell.appendChild(wrapper);
+                }
+            } else {
+                var link = d.nameCell.querySelector('a');
+                if (link) {
+                    link.after(badge);
+                } else {
+                    d.nameCell.appendChild(badge);
+                }
+            }
+        }
+    }
+
+
+    var panelMinimized = false;
+
+    function renderWCRankPanel(data, interval) {
+        var existing = document.getElementById(PANEL_ID);
+        if (existing) {
+            panelMinimized = existing.classList.contains('minimized');
+            existing.remove();
+        }
+
+        if (data.length === 0) return;
+
+        var cmdCenter = findSidebarInsertPoint();
+        if (!cmdCenter) {
+            console.warn('[AllocRec] Could not find Command Center in sidebar');
+            return;
+        }
+
+        var total = data.length;
+        var maxWIP = data[0].totalWIP || 1;
+        var panel = document.createElement('div');
+        panel.id = PANEL_ID;
+        if (panelMinimized) panel.classList.add('minimized');
+
+        var header = document.createElement('div');
+        header.className = 'wc-rank-header';
+        var chevron = panelMinimized ? '\u25B6' : '\u25BC';
+        header.innerHTML =
+            '<button class="wc-rank-toggle" id="wc-rank-toggle-btn" title="Minimize / Expand">' + chevron + '</button>' +
+            '<h4>WIP Ranking</h4>' +
+            '<span class="wc-rank-interval">' + formatInterval(interval) + '</span>';
+        panel.appendChild(header);
+
+        var body = document.createElement('div');
+        body.className = 'wc-rank-body';
+
+        for (var i = 0; i < data.length; i++) {
+            var d = data[i];
+            var rc = rankColor(i + 1, total);
+            var barPct = maxWIP > 0 ? Math.round((d.totalWIP / maxWIP) * 100) : 0;
+            var unknownNote = d.unknownCount > 0 ? ' + ' + d.unknownCount + ' unknown' : '';
+
+            var row = document.createElement('div');
+            row.className = 'wc-rank-row';
+            row.title = d.name + ': ' + d.totalWIP.toLocaleString() + ' WIP across ' + d.arcCount + ' arcs' + unknownNote;
+            row.innerHTML =
+                '<span class="wc-rank-name" style="color:' + rc.fg + '">' + d.name + '</span>' +
+                '<span class="wc-rank-val" style="color:' + rc.fg + '">' + d.totalWIP.toLocaleString() + '</span>' +
+                '<div class="wc-rank-bar-wrap"><div class="wc-rank-bar" style="width:' + barPct + '%;background:' + rc.bd + '"></div></div>';
+            body.appendChild(row);
+        }
+        panel.appendChild(body);
+
+        var totalAll = 0;
+        for (var i = 0; i < data.length; i++) totalAll += data[i].totalWIP;
+        var footer = document.createElement('div');
+        footer.className = 'wc-rank-footer';
+        footer.textContent = data.length + ' workcells \u2022 ' + totalAll.toLocaleString() + ' total \u2022 ' + formatInterval(interval);
+        panel.appendChild(footer);
+
+        var insertAfter = cmdCenter.closest('li') || cmdCenter.closest('[class*="item"]') || cmdCenter;
+        if (insertAfter.nextSibling) {
+            insertAfter.parentNode.insertBefore(panel, insertAfter.nextSibling);
+        } else {
+            insertAfter.parentNode.appendChild(panel);
+        }
+
+        document.getElementById('wc-rank-toggle-btn').addEventListener('click', function(e) {
+            e.stopPropagation();
+            panelMinimized = !panelMinimized;
+            panel.classList.toggle('minimized');
+            this.textContent = panelMinimized ? '\u25B6' : '\u25BC';
+        });
+
+        header.addEventListener('click', function() {
+            panelMinimized = !panelMinimized;
+            panel.classList.toggle('minimized');
+            document.getElementById('wc-rank-toggle-btn').textContent = panelMinimized ? '\u25B6' : '\u25BC';
+        });
+    }
+
+    function runWorkcellRanking() {
+        if (!isWorkcellsPage()) return;
+
+        var interval = getCurrentInterval();
+        var data = scrapeWorkcellWIP();
+
+        console.log('[AllocRec] WC Ranking | interval: ' + interval + ' | workcells: ' + data.length);
+        for (var i = 0; i < data.length; i++) {
+            console.log('[AllocRec]   ' + data[i].name + ': ' + data[i].totalWIP + ' WIP (' + data[i].arcCount + ' arcs, ' + data[i].unknownCount + ' unknown)');
+        }
+
+        renderInlineBadges(data);
+        renderWCRankPanel(data, interval);
+    }
+
+    var lastWcUrl = location.href;
+    function watchWcChanges() {
+        if (location.href !== lastWcUrl) {
+            lastWcUrl = location.href;
+            if (isWorkcellsPage()) {
+                setTimeout(runWorkcellRanking, 2000);
+            }
+        }
+    }
+    setInterval(watchWcChanges, 800);
+
+    var origRun = run;
+    run = function() {
+        origRun();
+        if (isWorkcellsPage()) {
+            setTimeout(runWorkcellRanking, 2000);
+        }
+    };
+
+    var origCleanup = cleanup;
+    cleanup = function() {
+        origCleanup();
+        var panel = document.getElementById(PANEL_ID);
+        if (panel) panel.remove();
+        var badges = document.querySelectorAll('.alloc-wc-inline');
+        for (var i = 0; i < badges.length; i++) badges[i].remove();
+    };
+
 
     init();
 
