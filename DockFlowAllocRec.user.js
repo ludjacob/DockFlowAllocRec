@@ -729,10 +729,13 @@
         return false;
     }
 
-    function getWCSiteName() {
-        // Extract site name from URL path, e.g. /EIK2/wc or /EIK2/oba
-        var match = window.location.pathname.match(/\/([A-Z0-9]{3,6})\//i);
-        if (match) return match.toUpperCase();
+              function getWCSiteName() {
+        var parts = window.location.pathname.split('/');
+        for (var i = 0; i < parts.length; i++) {
+            if (/^[A-Z0-9]{3,6}$/i.test(parts[i])) {
+                return parts[i].toUpperCase();
+            }
+        }
         return null;
     }
 
