@@ -17,7 +17,7 @@
     'use strict';
 
     var path = window.location.pathname;
-    if (path.indexOf('/oba') === -1 && path.indexOf('/wc') === -1) return;
+    if (path.indexOf('/oba') === -1 && !/\/wc(\?|$)/i.test(path)) return;
 
     console.log('[AllocRec] v3.2 loaded | path: ' + path);
 
@@ -675,11 +675,11 @@
 
 
 
-    // =====================================================
-    // WORKCELL WIP RANKING MODULE
-    // - Color-coded inline badges next to cvM% workcell names
-    // - Sidebar panel docked below "Command Center", starts expanded
-    // - Reacts to interval changes via URL query param
+        // =====================================================
+    // WORKCELL WIP RANKING MODULE v1.0
+    // - Color-coded inline badges next to HEALTHY status
+    // - Sidebar panel docked below Command Center, starts expanded
+    // - Scoped to /wc page only
     // =====================================================
 
     var PANEL_ID = 'alloc-rec-wc-rank-panel';
@@ -849,7 +849,7 @@
         return results;
     }
 
-            function renderInlineBadges(data) {
+    function renderInlineBadges(data) {
         var old = document.querySelectorAll('.alloc-wc-inline');
         for (var i = 0; i < old.length; i++) old[i].remove();
 
@@ -869,7 +869,6 @@
             badge.title = d.totalWIP.toLocaleString() + ' WIP across ' + d.arcCount + ' arcs' + unknownTip;
             badge.textContent = d.totalWIP.toLocaleString();
 
-            // Find the row and the status cell
             var row = d.nameCell.closest('tr');
             if (!row) continue;
 
@@ -883,33 +882,16 @@
             }
 
             if (statusCell) {
-                // Force the status cell to lay out inline so badge sits beside text
                 statusCell.style.whiteSpace = 'nowrap';
-                // Find the last child element (icon + text span) and insert after it
-                var lastEl = statusCell.lastElementChild || statusCell;
-                if (lastEl === statusCell) {
-                    // Wrap existing text in a span to keep it inline
-                    var wrapper = document.createElement('span');
-                    wrapper.style.display = 'inline-flex';
-                    wrapper.style.alignItems = 'center';
-                    wrapper.style.gap = '6px';
-                    while (statusCell.firstChild) {
-                        wrapper.appendChild(statusCell.firstChild);
-                    }
-                    wrapper.appendChild(badge);
-                    statusCell.appendChild(wrapper);
-                } else {
-                    // Wrap the cell contents + badge in an inline-flex container
-                    var wrapper = document.createElement('span');
-                    wrapper.style.display = 'inline-flex';
-                    wrapper.style.alignItems = 'center';
-                    wrapper.style.gap = '6px';
-                    while (statusCell.firstChild) {
-                        wrapper.appendChild(statusCell.firstChild);
-                    }
-                    wrapper.appendChild(badge);
-                    statusCell.appendChild(wrapper);
+                var wrapper = document.createElement('span');
+                wrapper.style.display = 'inline-flex';
+                wrapper.style.alignItems = 'center';
+                wrapper.style.gap = '6px';
+                while (statusCell.firstChild) {
+                    wrapper.appendChild(statusCell.firstChild);
                 }
+                wrapper.appendChild(badge);
+                statusCell.appendChild(wrapper);
             } else {
                 var link = d.nameCell.querySelector('a');
                 if (link) {
@@ -920,7 +902,6 @@
             }
         }
     }
-
 
     var panelMinimized = false;
 
@@ -940,7 +921,7 @@
         }
 
         var total = data.length;
-        var maxWIP = data[0].totalWIP || 1;
+        var maxWIP = data.totalWIP || 1;
         var panel = document.createElement('div');
         panel.id = PANEL_ID;
         if (panelMinimized) panel.classList.add('minimized');
@@ -1008,6 +989,8 @@
         var interval = getCurrentInterval();
         var data = scrapeWorkcellWIP();
 
+        if (data.length === 0) return;
+
         console.log('[AllocRec] WC Ranking | interval: ' + interval + ' | workcells: ' + data.length);
         for (var i = 0; i < data.length; i++) {
             console.log('[AllocRec]   ' + data[i].name + ': ' + data[i].totalWIP + ' WIP (' + data[i].arcCount + ' arcs, ' + data[i].unknownCount + ' unknown)');
@@ -1028,25 +1011,13 @@
     }
     setInterval(watchWcChanges, 800);
 
-    var origRun = run;
-    run = function() {
-        origRun();
-        if (isWorkcellsPage()) {
-            setTimeout(runWorkcellRanking, 2000);
-        }
-    };
-
-    var origCleanup = cleanup;
-    cleanup = function() {
-        origCleanup();
-        var panel = document.getElementById(PANEL_ID);
-        if (panel) panel.remove();
-        var badges = document.querySelectorAll('.alloc-wc-inline');
-        for (var i = 0; i < badges.length; i++) badges[i].remove();
-    };
+    // --- Self-contained init for workcell module ---
+    // Does NOT wrap or modify the base script's run/cleanup functions
+    if (isWorkcellsPage()) {
+        setTimeout(runWorkcellRanking, 3000);
+    }
 
 
     init();
 
 })();
-
