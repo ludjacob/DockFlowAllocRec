@@ -544,6 +544,7 @@
         var pending = 0;
         var MAX_CONCURRENT = 3;
         var idx = 0;
+
         function processNext() {
             while (pending < MAX_CONCURRENT && idx < arcRows.length) {
                 (function(arcRow) {
@@ -590,6 +591,7 @@
             }
         }
         processNext();
+
         if (!document.getElementById('alloc-rec-list-settings-btn')) {
             var ah = findH2('arcs');
             if (ah) {
@@ -671,11 +673,7 @@
         }
     }).observe(document, {subtree: true, childList: true});
 
-
-
-
-
-        // =====================================================
+    // =====================================================
     // WORKCELL WIP RANKING MODULE v2.0
     // - Live GraphQL data on every page via getSite query
     // - Color-coded inline badges next to HEALTHY status (on /wc only)
@@ -729,7 +727,7 @@
         return false;
     }
 
-              function getWCSiteName() {
+    function getWCSiteName() {
         var parts = window.location.pathname.split('/');
         for (var i = 0; i < parts.length; i++) {
             if (/^[A-Z0-9]{3,6}$/i.test(parts[i])) {
@@ -1039,7 +1037,6 @@
             panelMinimized = existing.classList.contains('minimized');
             existing.remove();
         }
-
         var cmdCenter = findSidebarInsertPoint();
         if (!cmdCenter) return;
 
@@ -1124,3 +1121,4 @@
     init();
 
 })();
+
