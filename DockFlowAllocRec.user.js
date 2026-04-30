@@ -675,15 +675,16 @@
 
 
 
-    // =====================================================
-    // WORKCELL WIP RANKING MODULE v1.1
+        // =====================================================
+    // WORKCELL WIP RANKING MODULE v2.0
+    // - Live GraphQL data on every page via getSite query
     // - Color-coded inline badges next to HEALTHY status (on /wc only)
     // - Sidebar panel docked below Command Center (every page)
-    // - Live scrape on /wc, sessionStorage cache on other pages
     // =====================================================
 
     var PANEL_ID = 'alloc-rec-wc-rank-panel';
-    var WC_STORAGE_KEY = 'alloc_rec_wc_ranking';
+    var WC_REFRESH_MS = 60000; // refresh every 60s
+    var wcRefreshTimer = null;
 
     function rankColor(rank, total) {
         var pct = total <= 1 ? 1 : (rank - 1) / (total - 1);
@@ -712,7 +713,9 @@
         '#' + PANEL_ID + ' .wc-rank-val{font-weight:700;min-width:30px;text-align:right;font-size:10px}',
         '#' + PANEL_ID + ' .wc-rank-bar-wrap{width:40px;height:4px;background:#f1f5f9;border-radius:2px;overflow:hidden;flex-shrink:0}',
         '#' + PANEL_ID + ' .wc-rank-bar{height:100%;border-radius:2px}',
-        '#' + PANEL_ID + ' .wc-rank-footer{padding:4px 10px;border-top:1px solid #e2e8f0;font-size:9px;color:#94a3b8;text-align:center}'
+        '#' + PANEL_ID + ' .wc-rank-footer{padding:4px 10px;border-top:1px solid #e2e8f0;font-size:9px;color:#94a3b8;text-align:center}',
+        '#' + PANEL_ID + ' .wc-rank-loading{padding:12px 10px;text-align:center;color:#94a3b8;font-size:11px}',
+        '#' + PANEL_ID + ' .wc-rank-error{padding:8px 10px;text-align:center;color:#dc2626;font-size:10px}'
     ].join('');
     document.head.appendChild(wcStyle);
 
@@ -726,7 +729,14 @@
         return false;
     }
 
-    function getCurrentInterval() {
+    function getWCSiteName() {
+        // Extract site name from URL path, e.g. /EIK2/wc or /EIK2/oba
+        var match = window.location.pathname.match(/\/([A-Z0-9]{3,6})\//i);
+        if (match) return match.toUpperCase();
+        return null;
+    }
+
+    function getWCInterval() {
         try {
             var params = new URLSearchParams(window.location.search);
             var cfg = params.get('workcelllandingConfig');
@@ -735,14 +745,6 @@
                 if (parsed.interval) return parsed.interval;
             }
         } catch (e) {}
-        var btns = document.querySelectorAll('button, [role="button"], [class*="select"], [class*="dropdown"]');
-        var intervals = ['MIN_15', 'MIN_30', 'HR_1', 'HR_2', 'HR_4', 'HR_8', 'HR_24'];
-        for (var i = 0; i < btns.length; i++) {
-            var txt = btns[i].textContent.trim().replace(/[\s]+/g, '_').toUpperCase();
-            for (var j = 0; j < intervals.length; j++) {
-                if (txt === intervals[j] || txt.indexOf(intervals[j]) !== -1) return intervals[j];
-            }
-        }
         return 'HR_1';
     }
 
@@ -772,8 +774,109 @@
         return null;
     }
 
-    function scrapeWorkcellWIP() {
-        var results = [];
+    function getWCToken() {
+        try {
+            return localStorage.getItem('dockflow.localStorageIdToken');
+        } catch (e) {
+            return null;
+        }
+    }
+
+    var GET_SITE_QUERY = 'query getSite($siteName: String!, $outboundArcName: String) { site(siteName: $siteName, outboundArcName: $outboundArcName) { name workcells { id { name type siteName } outboundArcs { name workState { rate { projected { interval rate } } } } } } }';
+
+    function fetchWorkcellWIP(siteName, interval, callback) {
+        var token = getWCToken();
+        if (!token) {
+            console.warn('[AllocRec] WC Ranking | no auth token');
+            callback(null, 'No auth token — reload page');
+            return;
+        }
+
+        var body = JSON.stringify({
+            operationName: 'getSite',
+            variables: { siteName: siteName },
+            query: GET_SITE_QUERY
+        });
+
+        var xhr = new XMLHttpRequest();
+        xhr.open('POST', 'https://rtyxxulvlvberovj325a3rxppq.appsync-api.us-east-1.amazonaws.com/graphql');
+        xhr.setRequestHeader('Content-Type', 'application/json');
+        xhr.setRequestHeader('Authorization', token);
+        xhr.timeout = 15000;
+
+        xhr.onload = function() {
+            if (xhr.status !== 200) {
+                callback(null, 'API error ' + xhr.status);
+                return;
+            }
+            try {
+                var resp = JSON.parse(xhr.responseText);
+                var workcells = resp.data.site.workcells;
+                var results = [];
+
+                for (var w = 0; w < workcells.length; w++) {
+                    var wc = workcells[w];
+                    var wcName = wc.id.name;
+
+                    // Only cvM% workcells
+                    if (!/^cvM/i.test(wcName)) continue;
+
+                    var totalWIP = 0;
+                    var arcCount = 0;
+                    var arcs = wc.outboundArcs || [];
+
+                    for (var a = 0; a < arcs.length; a++) {
+                        var arc = arcs[a];
+                        var projected = arc.workState && arc.workState.rate && arc.workState.rate.projected;
+                        if (!projected) continue;
+
+                        for (var p = 0; p < projected.length; p++) {
+                            if (projected[p].interval === interval) {
+                                var rate = projected[p].rate;
+                                if (typeof rate === 'number' && rate > 0) {
+                                    totalWIP += rate;
+                                    arcCount++;
+                                }
+                                break;
+                            }
+                        }
+                    }
+
+                    results.push({
+                        name: wcName,
+                        totalWIP: totalWIP,
+                        arcCount: arcCount,
+                        unknownCount: 0
+                    });
+                }
+
+                results.sort(function(a, b) { return b.totalWIP - a.totalWIP; });
+                callback(results, null);
+            } catch (e) {
+                console.error('[AllocRec] WC parse error', e);
+                callback(null, 'Parse error');
+            }
+        };
+
+        xhr.onerror = function() { callback(null, 'Network error'); };
+        xhr.ontimeout = function() { callback(null, 'Request timeout'); };
+        xhr.send(body);
+    }
+
+    // --- Inline badges (only on /wc page) ---
+    function renderInlineBadges(data) {
+        var old = document.querySelectorAll('.alloc-wc-inline');
+        for (var i = 0; i < old.length; i++) old[i].remove();
+
+        if (!isWorkcellsPage()) return;
+
+        // Build lookup by name
+        var lookup = {};
+        for (var i = 0; i < data.length; i++) {
+            lookup[data[i].name] = { index: i, d: data[i] };
+        }
+
+        var total = data.length;
         var rows = document.querySelectorAll('tr');
 
         for (var r = 0; r < rows.length; r++) {
@@ -781,7 +884,6 @@
             if (cells.length < 2) continue;
 
             var wcName = '';
-            var nameCell = null;
             for (var c = 0; c < cells.length; c++) {
                 var cell = cells[c];
                 var link = cell.querySelector('a');
@@ -796,127 +898,25 @@
                 }
                 if (/^cvM/i.test(t) && t.length < 40) {
                     wcName = t;
-                    nameCell = cell;
                     break;
                 }
             }
-            if (!wcName) continue;
+            if (!wcName || !lookup[wcName]) continue;
 
-            var arcCell = null;
-            for (var c = cells.length - 1; c >= 0; c--) {
-                if (/[A-Z]{2,}\d*_(TOTE|CASE)/i.test(cells[c].textContent)) {
-                    arcCell = cells[c];
-                    break;
-                }
-            }
-            if (!arcCell) continue;
+            var entry = lookup[wcName];
+            var d = entry.d;
+            var rc = rankColor(entry.index + 1, total);
 
-            var totalWIP = 0;
-            var arcCount = 0;
-            var unknownCount = 0;
-            var arcDetails = [];
-
-            var walker = document.createTreeWalker(arcCell, NodeFilter.SHOW_TEXT, null, false);
-            var textNodes = [];
-            while (walker.nextNode()) {
-                var val = walker.currentNode.textContent.trim();
-                if (val.length > 0) textNodes.push(val);
-            }
-
-            for (var t = 0; t < textNodes.length; t++) {
-                var txt = textNodes[t];
-                if (/^\d+$/.test(txt)) {
-                    var wipVal = parseInt(txt);
-                    totalWIP += wipVal;
-                    arcCount++;
-                    if (t > 0) arcDetails.push({ arc: textNodes[t - 1], wip: wipVal });
-                } else if (/^unknown$/i.test(txt)) {
-                    unknownCount++;
-                    if (t > 0) arcDetails.push({ arc: textNodes[t - 1], wip: 'UNKNOWN' });
-                }
-            }
-
-            results.push({
-                name: wcName,
-                nameCell: nameCell,
-                totalWIP: totalWIP,
-                arcCount: arcCount,
-                unknownCount: unknownCount,
-                arcDetails: arcDetails
-            });
-        }
-
-        results.sort(function(a, b) { return b.totalWIP - a.totalWIP; });
-        return results;
-    }
-
-    // --- sessionStorage helpers ---
-    function saveWCData(data, interval) {
-        var serializable = [];
-        for (var i = 0; i < data.length; i++) {
-            serializable.push({
-                name: data[i].name,
-                totalWIP: data[i].totalWIP,
-                arcCount: data[i].arcCount,
-                unknownCount: data[i].unknownCount
-            });
-        }
-        var payload = {
-            data: serializable,
-            interval: interval,
-            timestamp: Date.now()
-        };
-        try {
-            sessionStorage.setItem(WC_STORAGE_KEY, JSON.stringify(payload));
-        } catch (e) {
-            console.warn('[AllocRec] Could not save WC data to sessionStorage', e);
-        }
-    }
-
-    function loadWCData() {
-        try {
-            var raw = sessionStorage.getItem(WC_STORAGE_KEY);
-            if (!raw) return null;
-            return JSON.parse(raw);
-        } catch (e) {
-            return null;
-        }
-    }
-
-    function timeAgo(ts) {
-        var diff = Math.floor((Date.now() - ts) / 1000);
-        if (diff < 60) return diff + 's ago';
-        var min = Math.floor(diff / 60);
-        if (min < 60) return min + ' min ago';
-        var hr = Math.floor(min / 60);
-        return hr + ' hr ' + (min % 60) + ' min ago';
-    }
-
-    function renderInlineBadges(data) {
-        var old = document.querySelectorAll('.alloc-wc-inline');
-        for (var i = 0; i < old.length; i++) old[i].remove();
-
-        var total = data.length;
-        for (var i = 0; i < data.length; i++) {
-            var d = data[i];
-            if (!d.nameCell) continue;
-
-            var rc = rankColor(i + 1, total);
             var badge = document.createElement('span');
             badge.className = 'alloc-wc-inline';
             badge.style.background = rc.bg;
             badge.style.color = rc.fg;
             badge.style.borderColor = rc.bd;
-
-            var unknownTip = d.unknownCount > 0 ? ' + ' + d.unknownCount + ' unknown' : '';
-            badge.title = d.totalWIP.toLocaleString() + ' WIP across ' + d.arcCount + ' arcs' + unknownTip;
+            badge.title = d.totalWIP.toLocaleString() + ' WIP across ' + d.arcCount + ' arcs';
             badge.textContent = d.totalWIP.toLocaleString();
 
-            var row = d.nameCell.closest('tr');
-            if (!row) continue;
-
+            // Find status cell in this row
             var statusCell = null;
-            var cells = row.querySelectorAll('td');
             for (var c = 0; c < cells.length; c++) {
                 if (/HEALTHY|WARN|INFO/i.test(cells[c].textContent.trim()) && cells[c].textContent.trim().length < 20) {
                     statusCell = cells[c];
@@ -935,27 +935,19 @@
                 }
                 wrapper.appendChild(badge);
                 statusCell.appendChild(wrapper);
-            } else {
-                var link = d.nameCell.querySelector('a');
-                if (link) {
-                    link.after(badge);
-                } else {
-                    d.nameCell.appendChild(badge);
-                }
             }
         }
     }
 
+    // --- Sidebar panel (every page) ---
     var panelMinimized = false;
 
-    function renderWCRankPanel(data, interval, timestamp) {
+    function renderWCRankPanel(data, interval, error) {
         var existing = document.getElementById(PANEL_ID);
         if (existing) {
             panelMinimized = existing.classList.contains('minimized');
             existing.remove();
         }
-
-        if (data.length === 0) return;
 
         var cmdCenter = findSidebarInsertPoint();
         if (!cmdCenter) {
@@ -963,8 +955,6 @@
             return;
         }
 
-        var total = data.length;
-        var maxWIP = data.totalWIP || 1;
         var panel = document.createElement('div');
         panel.id = PANEL_ID;
         if (panelMinimized) panel.classList.add('minimized');
@@ -978,36 +968,46 @@
             '<span class="wc-rank-interval">' + formatInterval(interval) + '</span>';
         panel.appendChild(header);
 
-        var body = document.createElement('div');
-        body.className = 'wc-rank-body';
+        if (error) {
+            var errDiv = document.createElement('div');
+            errDiv.className = 'wc-rank-error';
+            errDiv.textContent = error;
+            panel.appendChild(errDiv);
+        } else if (!data || data.length === 0) {
+            var emptyDiv = document.createElement('div');
+            emptyDiv.className = 'wc-rank-loading';
+            emptyDiv.textContent = 'No cvM workcells found';
+            panel.appendChild(emptyDiv);
+        } else {
+            var total = data.length;
+            var maxWIP = data.totalWIP || 1;
 
-        for (var i = 0; i < data.length; i++) {
-            var d = data[i];
-            var rc = rankColor(i + 1, total);
-            var barPct = maxWIP > 0 ? Math.round((d.totalWIP / maxWIP) * 100) : 0;
-            var unknownNote = d.unknownCount > 0 ? ' + ' + d.unknownCount + ' unknown' : '';
+            var body = document.createElement('div');
+            body.className = 'wc-rank-body';
 
-            var row = document.createElement('div');
-            row.className = 'wc-rank-row';
-            row.title = d.name + ': ' + d.totalWIP.toLocaleString() + ' WIP across ' + d.arcCount + ' arcs' + unknownNote;
-            row.innerHTML =
-                '<span class="wc-rank-name" style="color:' + rc.fg + '">' + d.name + '</span>' +
-                '<span class="wc-rank-val" style="color:' + rc.fg + '">' + d.totalWIP.toLocaleString() + '</span>' +
-                '<div class="wc-rank-bar-wrap"><div class="wc-rank-bar" style="width:' + barPct + '%;background:' + rc.bd + '"></div></div>';
-            body.appendChild(row);
+            for (var i = 0; i < data.length; i++) {
+                var d = data[i];
+                var rc = rankColor(i + 1, total);
+                var barPct = maxWIP > 0 ? Math.round((d.totalWIP / maxWIP) * 100) : 0;
+
+                var row = document.createElement('div');
+                row.className = 'wc-rank-row';
+                row.title = d.name + ': ' + d.totalWIP.toLocaleString() + ' WIP across ' + d.arcCount + ' arcs';
+                row.innerHTML =
+                    '<span class="wc-rank-name" style="color:' + rc.fg + '">' + d.name + '</span>' +
+                    '<span class="wc-rank-val" style="color:' + rc.fg + '">' + d.totalWIP.toLocaleString() + '</span>' +
+                    '<div class="wc-rank-bar-wrap"><div class="wc-rank-bar" style="width:' + barPct + '%;background:' + rc.bd + '"></div></div>';
+                body.appendChild(row);
+            }
+            panel.appendChild(body);
+
+            var totalAll = 0;
+            for (var i = 0; i < data.length; i++) totalAll += data[i].totalWIP;
+            var footer = document.createElement('div');
+            footer.className = 'wc-rank-footer';
+            footer.textContent = data.length + ' workcells \u2022 ' + totalAll.toLocaleString() + ' total \u2022 ' + formatInterval(interval);
+            panel.appendChild(footer);
         }
-        panel.appendChild(body);
-
-        var totalAll = 0;
-        for (var i = 0; i < data.length; i++) totalAll += data[i].totalWIP;
-        var footer = document.createElement('div');
-        footer.className = 'wc-rank-footer';
-        var footerText = data.length + ' workcells \u2022 ' + totalAll.toLocaleString() + ' total \u2022 ' + formatInterval(interval);
-        if (timestamp) {
-            footerText += ' \u2022 updated ' + timeAgo(timestamp);
-        }
-        footer.textContent = footerText;
-        panel.appendChild(footer);
 
         var insertAfter = cmdCenter.closest('li') || cmdCenter.closest('[class*="item"]') || cmdCenter;
         if (insertAfter.nextSibling) {
@@ -1028,48 +1028,80 @@
             panel.classList.toggle('minimized');
             document.getElementById('wc-rank-toggle-btn').textContent = panelMinimized ? '\u25B6' : '\u25BC';
         });
+    }
 
-        // Auto-refresh the "updated X ago" text every 30s
-        if (timestamp) {
-            var footerRefresh = setInterval(function() {
-                if (!document.getElementById(PANEL_ID)) {
-                    clearInterval(footerRefresh);
-                    return;
-                }
-                footer.textContent = data.length + ' workcells \u2022 ' + totalAll.toLocaleString() + ' total \u2022 ' + formatInterval(interval) + ' \u2022 updated ' + timeAgo(timestamp);
-            }, 30000);
+    function showWCLoading(interval) {
+        var existing = document.getElementById(PANEL_ID);
+        if (existing) {
+            panelMinimized = existing.classList.contains('minimized');
+            existing.remove();
+        }
+
+        var cmdCenter = findSidebarInsertPoint();
+        if (!cmdCenter) return;
+
+        var panel = document.createElement('div');
+        panel.id = PANEL_ID;
+        if (panelMinimized) panel.classList.add('minimized');
+
+        var header = document.createElement('div');
+        header.className = 'wc-rank-header';
+        var chevron = panelMinimized ? '\u25B6' : '\u25BC';
+        header.innerHTML =
+            '<button class="wc-rank-toggle" id="wc-rank-toggle-btn">' + chevron + '</button>' +
+            '<h4>WIP Ranking</h4>' +
+            '<span class="wc-rank-interval">' + formatInterval(interval) + '</span>';
+        panel.appendChild(header);
+
+        var loading = document.createElement('div');
+        loading.className = 'wc-rank-loading';
+        loading.textContent = '\u23F3 Loading...';
+        panel.appendChild(loading);
+
+        var insertAfter = cmdCenter.closest('li') || cmdCenter.closest('[class*="item"]') || cmdCenter;
+        if (insertAfter.nextSibling) {
+            insertAfter.parentNode.insertBefore(panel, insertAfter.nextSibling);
+        } else {
+            insertAfter.parentNode.appendChild(panel);
         }
     }
 
     function runWorkcellRanking() {
-        if (isWorkcellsPage()) {
-            // Live scrape on /wc page
-            var interval = getCurrentInterval();
-            var data = scrapeWorkcellWIP();
+        var siteName = getWCSiteName();
+        if (!siteName) {
+            console.warn('[AllocRec] WC Ranking | could not determine site name');
+            return;
+        }
 
-            if (data.length === 0) return;
+        var interval = getWCInterval();
+        showWCLoading(interval);
 
-            console.log('[AllocRec] WC Ranking LIVE | interval: ' + interval + ' | workcells: ' + data.length);
-            for (var i = 0; i < data.length; i++) {
-                console.log('[AllocRec]   ' + data[i].name + ': ' + data[i].totalWIP + ' WIP (' + data[i].arcCount + ' arcs, ' + data[i].unknownCount + ' unknown)');
-            }
+        console.log('[AllocRec] WC Ranking | fetching ' + siteName + ' @ ' + interval);
 
-            saveWCData(data, interval);
-            renderInlineBadges(data);
-            renderWCRankPanel(data, interval, null);
-        } else {
-            // Other pages: load from sessionStorage
-            var cached = loadWCData();
-            if (!cached || !cached.data || cached.data.length === 0) {
-                console.log('[AllocRec] WC Ranking | no cached data available');
+        fetchWorkcellWIP(siteName, interval, function(data, error) {
+            if (error) {
+                console.warn('[AllocRec] WC Ranking | error: ' + error);
+                renderWCRankPanel(null, interval, error);
                 return;
             }
 
-            console.log('[AllocRec] WC Ranking CACHED | interval: ' + cached.interval + ' | workcells: ' + cached.data.length + ' | age: ' + timeAgo(cached.timestamp));
-            renderWCRankPanel(cached.data, cached.interval, cached.timestamp);
-        }
+            console.log('[AllocRec] WC Ranking LIVE | ' + data.length + ' workcells');
+            for (var i = 0; i < data.length; i++) {
+                console.log('[AllocRec]   ' + data[i].name + ': ' + data[i].totalWIP + ' WIP (' + data[i].arcCount + ' arcs)');
+            }
+
+            renderWCRankPanel(data, interval, null);
+            renderInlineBadges(data);
+        });
     }
 
+    // --- Auto-refresh every 60s ---
+    function startWCRefresh() {
+        if (wcRefreshTimer) clearInterval(wcRefreshTimer);
+        wcRefreshTimer = setInterval(runWorkcellRanking, WC_REFRESH_MS);
+    }
+
+    // --- Watch for URL changes ---
     var lastWcUrl = location.href;
     function watchWcChanges() {
         if (location.href !== lastWcUrl) {
@@ -1079,8 +1111,11 @@
     }
     setInterval(watchWcChanges, 800);
 
-    // Self-contained init — does not wrap base script's run/cleanup
-    setTimeout(runWorkcellRanking, 3000);
+    // --- Self-contained init ---
+    setTimeout(function() {
+        runWorkcellRanking();
+        startWCRefresh();
+    }, 3000);
 
 
     init();
