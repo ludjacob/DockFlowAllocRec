@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         DockFlow Allocation Recommender
 // @namespace    http://tampermonkey.net/
-// @version      3.3.0
+// @version      3.4.0
 // @description  Recommends allocation changes on OBA detail and Arcs list pages
 // @author       Jake
 // @match        https://prod-na.dockflow.robotics.a2z.com/*
@@ -12,6 +12,7 @@
 // @downloadURL  https://github.com/ludjacob/DockFlowAllocRec/raw/main/DockFlowAllocRec.user.js
 // @updateURL    https://github.com/ludjacob/DockFlowAllocRec/raw/main/DockFlowAllocRec.user.js
 // ==/UserScript==
+
 (function() {
 'use strict';
 
@@ -19,7 +20,7 @@ var path = window.location.pathname;
 
 if (path.indexOf('/oba') === -1 && !/\/wc(\?|$)/i.test(path)) return;
 
-console.log('[AllocRec] v3.3.0 loaded | path: ' + path);
+console.log('[AllocRec] v3.4.0 loaded | path: ' + path);
 
 var style = document.createElement('style');
 
@@ -28,7 +29,6 @@ style.textContent = [
 '#alloc-rec-badge.increase{background:#fde8e8;color:#b91c1c;border:1px solid #f87171}',
 '#alloc-rec-badge.decrease{background:#d1fae5;color:#065f46;border:1px solid #6ee7b7}',
 '#alloc-rec-badge.no-change{background:#e0e7ff;color:#3730a3;border:1px solid #a5b4fc}',
-'#alloc-rec-badge.dark-window{background:#f8f8f8;color:#94a3b8;border:1px dashed #cbd5e1}',
 '#alloc-rec-settings-btn{cursor:pointer;background:none;border:none;font-size:18px;margin-left:8px;vertical-align:middle;opacity:0.7}',
 '#alloc-rec-settings-btn:hover{opacity:1}',
 '#alloc-rec-overlay{position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.4);z-index:99999;display:flex;align-items:center;justify-content:center}',
@@ -57,32 +57,28 @@ document.head.appendChild(style);
 
 var CONFIG_KEY = 'dockflow_alloc_config';
 
-// DEFAULTS now include dark window fields and units per tote
 var DEFAULTS = {
 containerizeRateCase: 85,
 containerizeRateTote: 75,
-darkWindows: '05:00-07:30,18:00-18:30',
-unitsPerTote: 3.5
+unitsPerTote: 3.5,
+darkWindows: '05:00-07:30,18:00-18:30'
 };
 
 var listLoaded = false;
-    var EXCLUDED_ARCS = ['KICKOUT', 'DZ-P'];
+
+var EXCLUDED_ARCS = ['KICKOUT', 'DZ-P'];
 
 function isExcludedArc(name) {
-    var upper = name.toUpperCase();
-    for (var i = 0; i < EXCLUDED_ARCS.length; i++) {
-        if (upper.indexOf(EXCLUDED_ARCS[i]) !== -1) return true;
-    }
-    return false;
+var upper = name.toUpperCase();
+for (var i = 0; i < EXCLUDED_ARCS.length; i++) {
+if (upper.indexOf(EXCLUDED_ARCS[i]) !== -1) return true;
 }
-
-// Returns true if the arc name ends with _TOTE (case-insensitive)
-function isToteSuffix(name) {
-    return name.toUpperCase().indexOf('_TOTE') === name.length - 5 && name.length >= 5;
+return false;
 }
 
 var GRAPHQL_ENDPOINT = 'https://rtyxxulvlvberovj325a3rxppq.appsync-api.us-east-1.amazonaws.com/graphql';
 
+// GQL query includes aggregateRate for break detection (v3.4.0)
 var GQL_QUERY = [
 'query getOutboundArc($siteName: String!, $outboundArcName: String!) {',
 '  outboundArc(siteName: $siteName, outboundArcName: $outboundArcName) {',
@@ -96,6 +92,7 @@ var GQL_QUERY = [
 '    }',
 '    workState {',
 '      rate {',
+'        aggregateRate',
 '        projected {',
 '          interval',
 '          rate',
@@ -114,16 +111,16 @@ var p = JSON.parse(s);
 return {
 containerizeRateCase: p.containerizeRateCase || DEFAULTS.containerizeRateCase,
 containerizeRateTote: p.containerizeRateTote || DEFAULTS.containerizeRateTote,
-darkWindows: (p.darkWindows !== undefined) ? p.darkWindows : DEFAULTS.darkWindows,
-unitsPerTote: (p.unitsPerTote !== undefined && p.unitsPerTote > 0) ? p.unitsPerTote : DEFAULTS.unitsPerTote
+unitsPerTote: (p.unitsPerTote !== undefined) ? p.unitsPerTote : DEFAULTS.unitsPerTote,
+darkWindows: (p.darkWindows !== undefined) ? p.darkWindows : DEFAULTS.darkWindows
 };
 }
 } catch (e) {}
 return {
 containerizeRateCase: DEFAULTS.containerizeRateCase,
 containerizeRateTote: DEFAULTS.containerizeRateTote,
-darkWindows: DEFAULTS.darkWindows,
-unitsPerTote: DEFAULTS.unitsPerTote
+unitsPerTote: DEFAULTS.unitsPerTote,
+darkWindows: DEFAULTS.darkWindows
 };
 }
 
@@ -131,9 +128,8 @@ function saveConfig(cfg) {
 localStorage.setItem(CONFIG_KEY, JSON.stringify(cfg));
 }
 
-// ── DARK WINDOW HELPERS ──────────────────────────────────────────────────────
+// ─── DARK WINDOW HELPERS ──────────────────────────────────────────────────────
 
-// Parse "HH:MM" into total minutes since midnight
 function parseHHMM(str) {
 var parts = str.trim().split(':');
 if (parts.length !== 2) return null;
@@ -143,8 +139,6 @@ if (isNaN(h) || isNaN(m)) return null;
 return h * 60 + m;
 }
 
-// Parse the darkWindows string ("05:00-07:30,18:00-18:30") into
-// an array of {start, end} objects (minutes since midnight).
 function parseDarkWindows(str) {
 if (!str || !str.trim()) return [];
 var windows = [];
@@ -161,7 +155,6 @@ if (s !== null && e !== null) windows.push({start: s, end: e});
 return windows;
 }
 
-// Return true if the current local time falls inside any configured dark window
 function isInDarkWindow() {
 var cfg = getConfig();
 var windows = parseDarkWindows(cfg.darkWindows);
@@ -174,7 +167,6 @@ if (cur >= windows[i].start && cur < windows[i].end) return true;
 return false;
 }
 
-// Return milliseconds until the next dark window ends (or 0 if none active)
 function msUntilDarkWindowEnd() {
 var cfg = getConfig();
 var windows = parseDarkWindows(cfg.darkWindows);
@@ -190,7 +182,7 @@ return Math.max(0, minsLeft * 60 * 1000);
 return 0;
 }
 
-// ── END DARK WINDOW HELPERS ──────────────────────────────────────────────────
+// ─── END DARK WINDOW HELPERS ──────────────────────────────────────────────────
 
 function containsPID(str) {
 return str.toUpperCase().indexOf('PID') !== -1;
@@ -378,7 +370,6 @@ if (box.className && box.className.indexOf('content-wrapper') !== -1) break;
 return box;
 }
 
-// Settings modal now includes dark window fields and units per tote
 function showSettings() {
 var cfg = getConfig();
 var old = document.getElementById('alloc-rec-overlay');
@@ -391,8 +382,8 @@ ov.innerHTML = '<div id="alloc-rec-modal">' +
 '<input type="number" id="alloc-cfg-cases" value="' + cfg.containerizeRateCase + '" min="1" />' +
 '<label for="alloc-cfg-totes">Tote Containerize Rate (JPH)</label>' +
 '<input type="number" id="alloc-cfg-totes" value="' + cfg.containerizeRateTote + '" min="1" />' +
-'<label for="alloc-cfg-upt">Units Per Tote (for _TOTE arcs only)</label>' +
-'<input type="number" id="alloc-cfg-upt" value="' + cfg.unitsPerTote + '" min="0.1" step="0.1" />' +
+'<label for="alloc-cfg-upt">Units Per Tote</label>' +
+'<input type="number" id="alloc-cfg-upt" value="' + cfg.unitsPerTote + '" min="0.1" step="0.5" />' +
 '<label for="alloc-cfg-dark">Dark Windows (HH:MM-HH:MM, comma-separated)</label>' +
 '<input type="text" id="alloc-cfg-dark" value="' + cfg.darkWindows + '" ' +
 'placeholder="05:00-07:30,18:00-18:30" />' +
@@ -410,8 +401,7 @@ if (e.target === ov) ov.remove();
 document.getElementById('alloc-cfg-save').addEventListener('click', function() {
 var c = parseInt(document.getElementById('alloc-cfg-cases').value) || DEFAULTS.containerizeRateCase;
 var t = parseInt(document.getElementById('alloc-cfg-totes').value) || DEFAULTS.containerizeRateTote;
-var upt = parseFloat(document.getElementById('alloc-cfg-upt').value);
-if (isNaN(upt) || upt <= 0) upt = DEFAULTS.unitsPerTote;
+var upt = parseFloat(document.getElementById('alloc-cfg-upt').value) || DEFAULTS.unitsPerTote;
 var dw = document.getElementById('alloc-cfg-dark').value.trim();
 saveConfig({containerizeRateCase: c, containerizeRateTote: t, unitsPerTote: upt, darkWindows: dw});
 ov.remove();
@@ -420,17 +410,15 @@ run();
 });
 }
 
-// calcDetail — applies unitsPerTote conversion for _TOTE suffix arcs
+// ─── CALCULATION FUNCTIONS ────────────────────────────────────────────────────
+
 function calcDetail() {
 var arcName = getArcName();
-    if (isExcludedArc(arcName)) return null;
+if (isExcludedArc(arcName)) return null;
 var avg = getAvg(arcName);
-var cfg = getConfig();
-var applyUPT = isToteSuffix(arcName);
-var upt = applyUPT ? cfg.unitsPerTote : 1;
 var wip = scrapeFuture();
 var alloc = scrapeAlloc();
-console.log('[AllocRec] Detail | arc: ' + arcName + ' | type: ' + getArcType(arcName) + ' | rate: ' + avg + ' JPH | upt: ' + upt + ' | wip: ' + JSON.stringify(wip) + ' | alloc: ' + alloc);
+console.log('[AllocRec] Detail | arc: ' + arcName + ' | type: ' + getArcType(arcName) + ' | rate: ' + avg + ' JPH | wip: ' + JSON.stringify(wip) + ' | alloc: ' + alloc);
 if (!wip || alloc === null) return null;
 var minA = 0;
 for (var i = 0; i < 4; i++) {
@@ -441,7 +429,8 @@ var hm = [0.25, 0.5, 1, 2, 4, 8, 24];
 var per = [];
 for (var i = 0; i < wip.length; i++) {
 var n = 0;
-if (wip[i] > 0) n = Math.round((wip[i] / upt) / hm[i] / avg);
+var w = (getArcType(arcName) === 'TOTE') ? wip[i] / getConfig().unitsPerTote : wip[i];
+if (w > 0) n = Math.round(w / hm[i] / avg);
 n = Math.max(n, minA);
 per.push({interval: intervals[i], needed: n, delta: n - alloc});
 }
@@ -453,7 +442,6 @@ return {
 currentAlloc: alloc,
 containerizeRate: avg,
 arcType: getArcType(arcName),
-unitsPerTote: applyUPT ? upt : null,
 perInterval: per,
 primaryDelta: pn - alloc,
 primaryNeeded: pn,
@@ -461,13 +449,9 @@ minAlloc: minA
 };
 }
 
-// calcDetailFromGQL — applies unitsPerTote conversion for _TOTE suffix arcs
 function calcDetailFromGQL(arcName, projected, workcells) {
-    if (isExcludedArc(arcName)) return null;
+if (isExcludedArc(arcName)) return null;
 var avg = getAvg(arcName);
-var cfg = getConfig();
-var applyUPT = isToteSuffix(arcName);
-var upt = applyUPT ? cfg.unitsPerTote : 1;
 var intervalKeys = ['MIN_15', 'MIN_30', 'HR_1', 'HR_2', 'HR_4', 'HR_8', 'HR_24'];
 var wip = [];
 for (var k = 0; k < intervalKeys.length; k++) {
@@ -485,7 +469,7 @@ for (var i = 0; i < workcells.length; i++) {
 var wcName = (workcells[i].id && workcells[i].id.name) ? workcells[i].id.name : '';
 if (!containsPID(wcName)) alloc++;
 }
-console.log('[AllocRec] GQL | arc: ' + arcName + ' | rate: ' + avg + ' JPH | upt: ' + upt + ' | wip: ' + JSON.stringify(wip) + ' | alloc: ' + alloc);
+console.log('[AllocRec] GQL | arc: ' + arcName + ' | rate: ' + avg + ' JPH | wip: ' + JSON.stringify(wip) + ' | alloc: ' + alloc);
 var minA = 0;
 for (var i = 0; i < 4; i++) {
 if (wip[i] > 0) { minA = 1; break; }
@@ -495,7 +479,8 @@ var hm = [0.25, 0.5, 1, 2, 4, 8, 24];
 var per = [];
 for (var i = 0; i < wip.length; i++) {
 var n = 0;
-if (wip[i] > 0) n = Math.round((wip[i] / upt) / hm[i] / avg);
+var w = (getArcType(arcName) === 'TOTE') ? wip[i] / getConfig().unitsPerTote : wip[i];
+if (w > 0) n = Math.round(w / hm[i] / avg);
 n = Math.max(n, minA);
 per.push({interval: intervals[i], needed: n, delta: n - alloc});
 }
@@ -507,7 +492,6 @@ return {
 currentAlloc: alloc,
 containerizeRate: avg,
 arcType: getArcType(arcName),
-unitsPerTote: applyUPT ? upt : null,
 perInterval: per,
 primaryDelta: pn - alloc,
 primaryNeeded: pn,
@@ -537,171 +521,39 @@ var arc = json && json.data && json.data.outboundArc;
 if (!arc) return null;
 var projected = (arc.workState && arc.workState.rate && arc.workState.rate.projected) || [];
 var workcells = arc.workcells || [];
-return {projected: projected, workcells: workcells};
+var aggregateRate = (arc.workState && arc.workState.rate) ? (arc.workState.rate.aggregateRate || 0) : 0;
+return {projected: projected, workcells: workcells, aggregateRate: aggregateRate};
 }).catch(function(e) {
 console.warn('[AllocRec] fetchArcData error for ' + arcName + ': ' + e);
 return null;
 });
 }
 
-// 30-minute median burst cycle, 3 samples 10 minutes apart.
-// First-cycle baseline protection: Cycle 1 is preliminary, Cycle 2 confirms by
-// taking the max of both medians. Cycle 3+ uses normal rules: increases immediate,
-// decreases require two consecutive cycles.
+// ─── v3.4.0 STABILITY ENGINE ──────────────────────────────────────────────────
 //
-// During configured dark windows the script holds the last rendered recommendation
-// and skips all sampling. When the dark window ends a fresh burst cycle starts
-// with first-cycle baseline protection (detailCycleCount reset to 0).
+// Every 20 minutes: one check. Rules applied in order:
+// 1. Inside dark window: skip, hold badge.
+// 2. First check after dark window ends: preliminary only, cannot decrease.
+// 3. aggregateRate dropped 60%+ from last good rate: break detected, hold badge.
+// 4. Recommendation higher than current badge: increase by +1 only.
+// 5. Recommendation equal: no change.
+// 6. Recommendation lower, two consecutive checks confirm: deploy decrease.
 
-var detailSamples = [];
-var detailBurstTimer = null;
-var detailCycleTimer = null;
+var CHECK_INTERVAL_MS = 1200000;  // 20 minutes between checks
+
+var detailCheckTimer = null;
 var detailDarkTimer = null;
-var detailPendingDecrease = null;
-var detailCycleCount = 0;
-var detailCycle1Median = null;
+var detailPendingDecrease = null;   // value pending confirmation
+var detailCurrentBadge = null;      // currently displayed primaryNeeded value
+var detailLastGoodRate = null;      // last aggregateRate from a non-dark, non-break check
+var detailIsPostDark = false;       // true for the first check after a dark window
 
-var BURST_INTERVAL_MS = 600000;  // 10 minutes between samples
-var BURST_COUNT = 3;             // 3 samples per burst
-var CYCLE_MS = 1800000;          // 30 minutes between burst cycles
-
-function medianOf(arr) {
-if (!arr.length) return 0;
-var sorted = arr.slice().sort(function(a, b) { return a - b; });
-var mid = Math.floor(sorted.length / 2);
-return sorted.length % 2 !== 0 ? sorted[mid] : Math.round((sorted[mid - 1] + sorted[mid]) / 2);
-}
-
-// Show the held-recommendation badge during a dark window
-function renderDarkWindowBadge() {
-var badge = document.getElementById('alloc-rec-badge');
-if (!badge) return;
-badge.className = 'dark-window';
-badge.textContent = '\uD83C\uDF19 Paused \u2014 dark window active';
-}
-
-// Clear all running timers (burst + cycle + dark)
 function clearAllDetailTimers() {
-if (detailBurstTimer) { clearTimeout(detailBurstTimer); detailBurstTimer = null; }
-if (detailCycleTimer) { clearTimeout(detailCycleTimer); detailCycleTimer = null; }
+if (detailCheckTimer) { clearTimeout(detailCheckTimer); detailCheckTimer = null; }
 if (detailDarkTimer)  { clearTimeout(detailDarkTimer);  detailDarkTimer  = null; }
 }
 
-// Called when a dark window is detected. Holds the badge and waits for exit.
-function pauseForDarkWindow() {
-clearAllDetailTimers();
-detailSamples = [];
-renderDarkWindowBadge();
-var wait = msUntilDarkWindowEnd();
-console.log('[AllocRec] Dark window active \u2014 pausing ' + Math.round(wait / 60000) + ' min');
-detailDarkTimer = setTimeout(function() {
-detailDarkTimer = null;
-console.log('[AllocRec] Dark window ended \u2014 starting fresh cycle (baseline protection)');
-detailCycleCount = 0;
-detailCycle1Median = null;
-detailPendingDecrease = null;
-startDetailBurst();
-}, wait);
-}
-
-function renderDetailWithSample(rec) {
-if (!rec) return;
-detailSamples.push(rec.primaryNeeded);
-if (detailSamples.length === 1) {
-renderDetailBadge(rec);
-}
-if (detailSamples.length >= BURST_COUNT) {
-var medianNeeded = medianOf(detailSamples);
-var alloc = rec.currentAlloc;
-var delta = medianNeeded - alloc;
-var stableRec = Object.assign({}, rec, {
-primaryNeeded: medianNeeded,
-primaryDelta: delta
-});
-if (detailCycleCount === 0) {
-detailCycle1Median = medianNeeded;
-detailCycleCount = 1;
-renderDetailBadge(stableRec);
-console.log('[AllocRec] Detail burst Cycle 1 (preliminary) | samples: ' + detailSamples.join(',') + ' | median: ' + medianNeeded);
-} else if (detailCycleCount === 1) {
-var confirmedNeeded = Math.max(detailCycle1Median, medianNeeded);
-var confirmedDelta = confirmedNeeded - alloc;
-var confirmedRec = Object.assign({}, rec, {
-primaryNeeded: confirmedNeeded,
-primaryDelta: confirmedDelta
-});
-detailCycleCount = 2;
-detailPendingDecrease = null;
-renderDetailBadge(confirmedRec);
-console.log('[AllocRec] Detail burst Cycle 2 (confirmed) | c1: ' + detailCycle1Median + ' | c2: ' + medianNeeded + ' | confirmed: ' + confirmedNeeded);
-} else {
-if (delta > 0) {
-detailPendingDecrease = null;
-renderDetailBadge(stableRec);
-console.log('[AllocRec] Detail burst complete (increase) | samples: ' + detailSamples.join(',') + ' | median: ' + medianNeeded);
-} else if (delta < 0) {
-if (detailPendingDecrease !== null && detailPendingDecrease === medianNeeded) {
-renderDetailBadge(stableRec);
-console.log('[AllocRec] Detail burst complete (decrease confirmed) | samples: ' + detailSamples.join(',') + ' | median: ' + medianNeeded);
-detailPendingDecrease = null;
-} else {
-detailPendingDecrease = medianNeeded;
-console.log('[AllocRec] Detail burst complete (decrease pending) | samples: ' + detailSamples.join(',') + ' | median: ' + medianNeeded);
-}
-} else {
-detailPendingDecrease = null;
-renderDetailBadge(stableRec);
-console.log('[AllocRec] Detail burst complete (no-change) | samples: ' + detailSamples.join(',') + ' | median: ' + medianNeeded);
-}
-}
-detailSamples = [];
-if (detailBurstTimer) { clearTimeout(detailBurstTimer); detailBurstTimer = null; }
-if (detailCycleTimer) clearTimeout(detailCycleTimer);
-detailCycleTimer = setTimeout(function() {
-detailCycleTimer = null;
-if (isInDarkWindow()) {
-pauseForDarkWindow();
-} else {
-startDetailBurst();
-}
-}, CYCLE_MS);
-}
-}
-
-function startDetailBurst() {
-    if (detailCycleTimer || detailBurstTimer) return;
-    if (isInDarkWindow()) {
-        var rec = calcDetail();
-        if (rec) renderDetailBadge(rec);
-        var wait = msUntilDarkWindowEnd();
-        console.log('[AllocRec] Dark window - showing preliminary, real cycle in ' + Math.round(wait / 60000) + ' min');
-        detailDarkTimer = setTimeout(function() {
-            detailDarkTimer = null;
-            detailCycleCount = 0;
-            detailCycle1Median = null;
-            detailPendingDecrease = null;
-            startDetailBurst();
-        }, wait);
-        return;
-    }
-    detailSamples = [];
-    var count = 0;
-    function takeSample() {
-        if (isInDarkWindow()) {
-            pauseForDarkWindow();
-            return;
-        }
-        var rec = calcDetail();
-        renderDetailWithSample(rec);
-        count++;
-        if (count < BURST_COUNT) {
-            detailBurstTimer = setTimeout(takeSample, BURST_INTERVAL_MS);
-        }
-    }
-    takeSample();
-}
-
-
+// Render the badge and update the interval forecast row.
 function renderDetailBadge(rec) {
 var badge = document.getElementById('alloc-rec-badge');
 if (!badge) {
@@ -756,12 +608,7 @@ label = document.createElement('div');
 label.id = 'alloc-rec-forecast-label';
 box.appendChild(label);
 }
-var labelText = 'Needed Allocations (' + rec.containerizeRate + ' JPH ' + rec.arcType;
-if (rec.unitsPerTote !== null) {
-labelText += ' | ' + rec.unitsPerTote + ' UPT';
-}
-labelText += ')';
-label.textContent = labelText;
+label.textContent = 'Needed Allocations (' + rec.containerizeRate + ' JPH ' + rec.arcType + ')';
 if (!row) {
 row = document.createElement('div');
 row.id = 'alloc-rec-forecast-row';
@@ -775,9 +622,150 @@ html += '<div class="alloc-cell">' + p.needed + '</div>';
 row.innerHTML = html;
 }
 
-function renderDetail() {
-startDetailBurst();
+// Apply the 20-minute check result with all stability rules.
+function applyDetailCheck(rec, aggregateRate) {
+if (!rec) {
+console.log('[AllocRec] Check: no rec data, holding badge');
+return;
 }
+
+var newNeeded = rec.primaryNeeded;
+var alloc = rec.currentAlloc;
+
+// Rule 3: aggregateRate break detection (60% drop from last good rate).
+// Skip if we have no baseline yet or this is a post-dark preliminary check.
+if (!detailIsPostDark && detailLastGoodRate !== null && aggregateRate > 0) {
+var rateDrop = (detailLastGoodRate - aggregateRate) / detailLastGoodRate;
+if (rateDrop >= 0.6) {
+console.log('[AllocRec] Check: break detected (aggregateRate dropped ' + Math.round(rateDrop * 100) + '%), holding badge');
+return;
+}
+}
+
+// Update last good rate now that we've passed the break filter.
+if (aggregateRate > 0) detailLastGoodRate = aggregateRate;
+
+// First check after dark window: treat as preliminary, no decrease allowed.
+if (detailIsPostDark) {
+detailIsPostDark = false;
+if (detailCurrentBadge !== null && newNeeded < detailCurrentBadge) {
+// Cannot decrease on post-dark check; hold current badge.
+console.log('[AllocRec] Check: post-dark preliminary, holding badge (needed=' + newNeeded + ' < current=' + detailCurrentBadge + ')');
+return;
+}
+// Equal or higher is fine for post-dark.
+detailCurrentBadge = newNeeded;
+detailPendingDecrease = null;
+renderDetailBadge(rec);
+console.log('[AllocRec] Check: post-dark preliminary deployed | needed=' + newNeeded);
+return;
+}
+
+if (detailCurrentBadge === null) {
+// Very first check ever: deploy directly.
+detailCurrentBadge = newNeeded;
+detailPendingDecrease = null;
+renderDetailBadge(rec);
+console.log('[AllocRec] Check: first deployment | needed=' + newNeeded);
+return;
+}
+
+// Rule 4: increase capped at +1.
+if (newNeeded > detailCurrentBadge) {
+var cappedNeeded = detailCurrentBadge + 1;
+var cappedDelta = cappedNeeded - alloc;
+var cappedRec = Object.assign({}, rec, {primaryNeeded: cappedNeeded, primaryDelta: cappedDelta});
+detailCurrentBadge = cappedNeeded;
+detailPendingDecrease = null;
+renderDetailBadge(cappedRec);
+console.log('[AllocRec] Check: increase (+1 cap) | needed=' + newNeeded + ' -> deployed=' + cappedNeeded);
+return;
+}
+
+// Rule 5: no change.
+if (newNeeded === detailCurrentBadge) {
+detailPendingDecrease = null;
+console.log('[AllocRec] Check: no change | needed=' + newNeeded);
+return;
+}
+
+// Rule 6: decrease requires two consecutive checks.
+if (newNeeded < detailCurrentBadge) {
+if (detailPendingDecrease !== null && detailPendingDecrease === newNeeded) {
+// Second consecutive check confirms the decrease.
+detailCurrentBadge = newNeeded;
+detailPendingDecrease = null;
+renderDetailBadge(rec);
+console.log('[AllocRec] Check: decrease confirmed | needed=' + newNeeded);
+} else {
+detailPendingDecrease = newNeeded;
+console.log('[AllocRec] Check: decrease pending confirmation | needed=' + newNeeded);
+}
+}
+}
+
+// Called when a dark window is detected mid-cycle.
+function pauseForDarkWindow() {
+clearAllDetailTimers();
+var wait = msUntilDarkWindowEnd();
+console.log('[AllocRec] Dark window active \u2014 pausing ' + Math.round(wait / 60000) + ' min');
+detailDarkTimer = setTimeout(function() {
+detailDarkTimer = null;
+detailIsPostDark = true;
+detailPendingDecrease = null;
+console.log('[AllocRec] Dark window ended \u2014 scheduling post-dark check');
+scheduleNextCheck(0);
+}, wait);
+}
+
+// Schedule the next 20-minute check (or an immediate one if delayMs=0).
+function scheduleNextCheck(delayMs) {
+if (detailCheckTimer) { clearTimeout(detailCheckTimer); detailCheckTimer = null; }
+detailCheckTimer = setTimeout(function() {
+detailCheckTimer = null;
+runDetailCheck();
+}, delayMs !== undefined ? delayMs : CHECK_INTERVAL_MS);
+}
+
+// Run one check: dark-window guard, calculate, apply rules, schedule next.
+function runDetailCheck() {
+if (isInDarkWindow()) {
+pauseForDarkWindow();
+return;
+}
+var rec = calcDetail();
+// aggregateRate is not available from DOM scrape; pass null so rule 3 is skipped
+// on DOM-only checks (detail page initial load). Rule 3 fires only from GQL checks.
+applyDetailCheck(rec, null);
+scheduleNextCheck();
+}
+
+// renderDetail: called on first page load for the detail view.
+// Shows a preliminary badge immediately, then starts the 20-minute check cycle.
+function renderDetail() {
+if (detailCheckTimer || detailDarkTimer) return;
+if (isInDarkWindow()) {
+// During dark window: show a live preliminary number so operators can plan.
+var rec = calcDetail();
+if (rec) {
+// Show it but don't lock it in as the stable badge value.
+renderDetailBadge(rec);
+}
+var wait = msUntilDarkWindowEnd();
+console.log('[AllocRec] Dark window on load \u2014 showing preliminary, real cycle in ' + Math.round(wait / 60000) + ' min');
+detailDarkTimer = setTimeout(function() {
+detailDarkTimer = null;
+detailIsPostDark = true;
+detailPendingDecrease = null;
+scheduleNextCheck(0);
+}, wait);
+return;
+}
+// Not in dark window: run first check immediately, then schedule 20-min cycle.
+runDetailCheck();
+}
+
+// ─── LIST VIEW ────────────────────────────────────────────────────────────────
 
 function renderList() {
 if (listLoaded) return;
@@ -791,7 +779,7 @@ if (cells.length < 5) continue;
 var name = cells[0].textContent.trim();
 if (!name || name.length < 3 || !/[A-Za-z]/.test(name)) continue;
 if ((/^arc\s*name$/i).test(name)) continue;
-    if (isExcludedArc(name)) continue;
+if (isExcludedArc(name)) continue;
 arcRows.push({row: rows[r], name: name, aCell: cells[4]});
 }
 console.log('[AllocRec] List | arc rows found: ' + arcRows.length);
@@ -891,6 +879,8 @@ ah.appendChild(gb);
 }
 }
 
+// ─── CLEANUP / RUN / OBSERVER ─────────────────────────────────────────────────
+
 function cleanup() {
 var ids = ['alloc-rec-badge', 'alloc-rec-settings-btn', 'alloc-rec-forecast-label', 'alloc-rec-forecast-row', 'alloc-rec-list-settings-btn'];
 for (var i = 0; i < ids.length; i++) {
@@ -900,29 +890,26 @@ if (el) el.remove();
 var bb = document.querySelectorAll('.alloc-rec-list-badge');
 for (var i = 0; i < bb.length; i++) bb[i].remove();
 listLoaded = false;
-detailSamples = [];
+detailCurrentBadge = null;
 detailPendingDecrease = null;
-detailCycleCount = 0;
-detailCycle1Median = null;
+detailLastGoodRate = null;
+detailIsPostDark = false;
 clearAllDetailTimers();
 }
 
 function run() {
-    console.log('[AllocRec] run | detail: ' + isDetail() + ' | list: ' + isList());
-    if (isDetail()) {
-        var arcName = getArcName();
-        if (arcName && isExcludedArc(arcName)) {
-            var existing = document.querySelector('.alloc-badge');
-            if (existing) existing.remove();
-            clearTimeout(detailBurstTimer);
-            clearTimeout(detailCycleTimer);
-            detailBurstTimer = null;
-            detailCycleTimer = null;
-            return;
-        }
-        renderDetail();
-    }
-    if (isList()) renderList();
+console.log('[AllocRec] run | detail: ' + isDetail() + ' | list: ' + isList());
+if (isDetail()) {
+var arcName = getArcName();
+if (arcName && isExcludedArc(arcName)) {
+var existing = document.querySelector('.alloc-badge');
+if (existing) existing.remove();
+clearAllDetailTimers();
+return;
+}
+renderDetail();
+}
+if (isList()) renderList();
 }
 
 function startObs() {
@@ -975,4 +962,3 @@ setTimeout(init, 1000);
 init();
 
 })();
-
