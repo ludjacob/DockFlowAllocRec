@@ -884,9 +884,21 @@ clearAllDetailTimers();
 }
 
 function run() {
-console.log('[AllocRec] run | detail: ' + isDetail() + ' | list: ' + isList());
-if (isDetail()) renderDetail();
-if (isList()) renderList();
+    console.log('[AllocRec] run | detail: ' + isDetail() + ' | list: ' + isList());
+    if (isDetail()) {
+        var arcName = getArcName();
+        if (arcName && isExcludedArc(arcName)) {
+            var existing = document.querySelector('.alloc-badge');
+            if (existing) existing.remove();
+            clearTimeout(detailBurstTimer);
+            clearTimeout(detailCycleTimer);
+            detailBurstTimer = null;
+            detailCycleTimer = null;
+            return;
+        }
+        renderDetail();
+    }
+    if (isList()) renderList();
 }
 
 function startObs() {
