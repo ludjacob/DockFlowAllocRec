@@ -12,20 +12,23 @@
 // @downloadURL  https://github.com/ludjacob/DockFlowAllocRec/raw/main/DockFlowAllocRec.user.js
 // @updateURL    https://github.com/ludjacob/DockFlowAllocRec/raw/main/DockFlowAllocRec.user.js
 // ==/UserScript==
-
 (function() {
 'use strict';
 
 var path = window.location.pathname;
+
 if (path.indexOf('/oba') === -1 && !/\/wc(\?|$)/i.test(path)) return;
+
 console.log('[AllocRec] v3.2.1 loaded | path: ' + path);
 
 var style = document.createElement('style');
+
 style.textContent = [
 '#alloc-rec-badge{display:inline-flex;align-items:center;gap:6px;padding:4px 12px;border-radius:16px;font-size:13px;font-weight:600;margin-left:10px;vertical-align:middle}',
 '#alloc-rec-badge.increase{background:#fde8e8;color:#b91c1c;border:1px solid #f87171}',
 '#alloc-rec-badge.decrease{background:#d1fae5;color:#065f46;border:1px solid #6ee7b7}',
 '#alloc-rec-badge.no-change{background:#e0e7ff;color:#3730a3;border:1px solid #a5b4fc}',
+'#alloc-rec-badge.dark-window{background:#f8f8f8;color:#94a3b8;border:1px dashed #cbd5e1}',
 '#alloc-rec-settings-btn{cursor:pointer;background:none;border:none;font-size:18px;margin-left:8px;vertical-align:middle;opacity:0.7}',
 '#alloc-rec-settings-btn:hover{opacity:1}',
 '#alloc-rec-overlay{position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.4);z-index:99999;display:flex;align-items:center;justify-content:center}',
@@ -49,11 +52,20 @@ style.textContent = [
 '.alloc-rec-list-badge.down{color:#065f46}',
 '.alloc-rec-list-badge.same{color:#3730a3}'
 ].join('');
+
 document.head.appendChild(style);
 
 var CONFIG_KEY = 'dockflow_alloc_config';
-var DEFAULTS = {containerizeRateCase: 85, containerizeRateTote: 75};
+
+// DEFAULTS now include dark window fields (default 05:00-07:30 and 18:00-18:30)
+var DEFAULTS = {
+containerizeRateCase: 85,
+containerizeRateTote: 75,
+darkWindows: '05:00-07:30,18:00-18:30'
+};
+
 var listLoaded = false;
+
 var GRAPHQL_ENDPOINT = 'https://rtyxxulvlvberovj325a3rxppq.appsync-api.us-east-1.amazonaws.com/graphql';
 
 var GQL_QUERY = [
@@ -86,19 +98,82 @@ if (s) {
 var p = JSON.parse(s);
 return {
 containerizeRateCase: p.containerizeRateCase || DEFAULTS.containerizeRateCase,
-containerizeRateTote: p.containerizeRateTote || DEFAULTS.containerizeRateTote
+containerizeRateTote: p.containerizeRateTote || DEFAULTS.containerizeRateTote,
+darkWindows: (p.darkWindows !== undefined) ? p.darkWindows : DEFAULTS.darkWindows
 };
 }
 } catch (e) {}
 return {
 containerizeRateCase: DEFAULTS.containerizeRateCase,
-containerizeRateTote: DEFAULTS.containerizeRateTote
+containerizeRateTote: DEFAULTS.containerizeRateTote,
+darkWindows: DEFAULTS.darkWindows
 };
 }
 
 function saveConfig(cfg) {
 localStorage.setItem(CONFIG_KEY, JSON.stringify(cfg));
 }
+
+// ── DARK WINDOW HELPERS ──────────────────────────────────────────────────────
+
+// Parse "HH:MM" into total minutes since midnight
+function parseHHMM(str) {
+var parts = str.trim().split(':');
+if (parts.length !== 2) return null;
+var h = parseInt(parts[0], 10);
+var m = parseInt(parts[1], 10);
+if (isNaN(h) || isNaN(m)) return null;
+return h * 60 + m;
+}
+
+// Parse the darkWindows string ("05:00-07:30,18:00-18:30") into
+// an array of {start, end} objects (minutes since midnight).
+function parseDarkWindows(str) {
+if (!str || !str.trim()) return [];
+var windows = [];
+var segments = str.split(',');
+for (var i = 0; i < segments.length; i++) {
+var seg = segments[i].trim();
+if (!seg) continue;
+var dash = seg.indexOf('-');
+if (dash === -1) continue;
+var s = parseHHMM(seg.substring(0, dash));
+var e = parseHHMM(seg.substring(dash + 1));
+if (s !== null && e !== null) windows.push({start: s, end: e});
+}
+return windows;
+}
+
+// Return true if the current local time falls inside any configured dark window
+function isInDarkWindow() {
+var cfg = getConfig();
+var windows = parseDarkWindows(cfg.darkWindows);
+if (!windows.length) return false;
+var now = new Date();
+var cur = now.getHours() * 60 + now.getMinutes();
+for (var i = 0; i < windows.length; i++) {
+if (cur >= windows[i].start && cur < windows[i].end) return true;
+}
+return false;
+}
+
+// Return milliseconds until the next dark window ends (or 0 if none active)
+function msUntilDarkWindowEnd() {
+var cfg = getConfig();
+var windows = parseDarkWindows(cfg.darkWindows);
+var now = new Date();
+var cur = now.getHours() * 60 + now.getMinutes();
+for (var i = 0; i < windows.length; i++) {
+if (cur >= windows[i].start && cur < windows[i].end) {
+var minsLeft = windows[i].end - cur;
+minsLeft -= (now.getSeconds() / 60);
+return Math.max(0, minsLeft * 60 * 1000);
+}
+}
+return 0;
+}
+
+// ── END DARK WINDOW HELPERS ──────────────────────────────────────────────────
 
 function containsPID(str) {
 return str.toUpperCase().indexOf('PID') !== -1;
@@ -286,6 +361,7 @@ if (box.className && box.className.indexOf('content-wrapper') !== -1) break;
 return box;
 }
 
+// Settings modal now includes dark window fields
 function showSettings() {
 var cfg = getConfig();
 var old = document.getElementById('alloc-rec-overlay');
@@ -298,6 +374,9 @@ ov.innerHTML = '<div id="alloc-rec-modal">' +
 '<input type="number" id="alloc-cfg-cases" value="' + cfg.containerizeRateCase + '" min="1" />' +
 '<label for="alloc-cfg-totes">Tote Containerize Rate (JPH)</label>' +
 '<input type="number" id="alloc-cfg-totes" value="' + cfg.containerizeRateTote + '" min="1" />' +
+'<label for="alloc-cfg-dark">Dark Windows (HH:MM-HH:MM, comma-separated)</label>' +
+'<input type="text" id="alloc-cfg-dark" value="' + cfg.darkWindows + '" ' +
+'placeholder="05:00-07:30,18:00-18:30" />' +
 '<div class="alloc-rec-btn-row">' +
 '<button class="alloc-rec-btn secondary" id="alloc-cfg-cancel">Cancel</button>' +
 '<button class="alloc-rec-btn primary" id="alloc-cfg-save">Save</button>' +
@@ -312,7 +391,8 @@ if (e.target === ov) ov.remove();
 document.getElementById('alloc-cfg-save').addEventListener('click', function() {
 var c = parseInt(document.getElementById('alloc-cfg-cases').value) || DEFAULTS.containerizeRateCase;
 var t = parseInt(document.getElementById('alloc-cfg-totes').value) || DEFAULTS.containerizeRateTote;
-saveConfig({containerizeRateCase: c, containerizeRateTote: t});
+var dw = document.getElementById('alloc-cfg-dark').value.trim();
+saveConfig({containerizeRateCase: c, containerizeRateTote: t, darkWindows: dw});
 ov.remove();
 listLoaded = false;
 run();
@@ -428,13 +508,23 @@ return null;
 }
 
 // CHANGE 2: 30-minute median burst cycle, 3 samples 10 minutes apart.
-// Increases apply immediately. Decreases require two consecutive cycles to confirm
-// before applying. This prevents break-related dips from triggering unnecessary
-// decrease recommendations.
+// First-cycle baseline protection: Cycle 1 is preliminary, Cycle 2 confirms by
+// taking the max of both medians. Cycle 3+ uses normal rules: increases immediate,
+// decreases require two consecutive cycles.
+//
+// CHANGE 3 (v3.2.1 shift gap pausing): During configured dark windows the script
+// holds the last rendered recommendation and skips all sampling. When the dark
+// window ends a fresh burst cycle starts with first-cycle baseline protection
+// (detailCycleCount reset to 0).
+
 var detailSamples = [];
 var detailBurstTimer = null;
 var detailCycleTimer = null;
+var detailDarkTimer = null;       // fires when dark window ends
 var detailPendingDecrease = null;
+var detailCycleCount = 0;
+var detailCycle1Median = null;
+
 var BURST_INTERVAL_MS = 600000;  // 10 minutes between samples
 var BURST_COUNT = 3;             // 3 samples per burst
 var CYCLE_MS = 1800000;          // 30 minutes between burst cycles
@@ -446,11 +536,42 @@ var mid = Math.floor(sorted.length / 2);
 return sorted.length % 2 !== 0 ? sorted[mid] : Math.round((sorted[mid - 1] + sorted[mid]) / 2);
 }
 
+// Show the held-recommendation badge during a dark window
+function renderDarkWindowBadge() {
+var badge = document.getElementById('alloc-rec-badge');
+if (!badge) return;
+badge.className = 'dark-window';
+badge.textContent = '\uD83C\uDF19 Paused \u2014 dark window active';
+}
+
+// Clear all running timers (burst + cycle + dark)
+function clearAllDetailTimers() {
+if (detailBurstTimer) { clearTimeout(detailBurstTimer); detailBurstTimer = null; }
+if (detailCycleTimer) { clearTimeout(detailCycleTimer); detailCycleTimer = null; }
+if (detailDarkTimer)  { clearTimeout(detailDarkTimer);  detailDarkTimer  = null; }
+}
+
+// Called when a dark window is detected. Holds the badge and waits for exit.
+function pauseForDarkWindow() {
+clearAllDetailTimers();
+detailSamples = [];
+renderDarkWindowBadge();
+var wait = msUntilDarkWindowEnd();
+console.log('[AllocRec] Dark window active \u2014 pausing ' + Math.round(wait / 60000) + ' min');
+detailDarkTimer = setTimeout(function() {
+detailDarkTimer = null;
+console.log('[AllocRec] Dark window ended \u2014 starting fresh cycle (baseline protection)');
+detailCycleCount = 0;
+detailCycle1Median = null;
+detailPendingDecrease = null;
+startDetailBurst();
+}, wait);
+}
+
 function renderDetailWithSample(rec) {
 if (!rec) return;
 detailSamples.push(rec.primaryNeeded);
 if (detailSamples.length === 1) {
-// Render immediately on first sample so badge is not blank
 renderDetailBadge(rec);
 }
 if (detailSamples.length >= BURST_COUNT) {
@@ -461,41 +582,68 @@ var stableRec = Object.assign({}, rec, {
 primaryNeeded: medianNeeded,
 primaryDelta: delta
 });
+if (detailCycleCount === 0) {
+detailCycle1Median = medianNeeded;
+detailCycleCount = 1;
+renderDetailBadge(stableRec);
+console.log('[AllocRec] Detail burst Cycle 1 (preliminary) | samples: ' + detailSamples.join(',') + ' | median: ' + medianNeeded);
+} else if (detailCycleCount === 1) {
+var confirmedNeeded = Math.max(detailCycle1Median, medianNeeded);
+var confirmedDelta = confirmedNeeded - alloc;
+var confirmedRec = Object.assign({}, rec, {
+primaryNeeded: confirmedNeeded,
+primaryDelta: confirmedDelta
+});
+detailCycleCount = 2;
+detailPendingDecrease = null;
+renderDetailBadge(confirmedRec);
+console.log('[AllocRec] Detail burst Cycle 2 (confirmed) | c1: ' + detailCycle1Median + ' | c2: ' + medianNeeded + ' | confirmed: ' + confirmedNeeded);
+} else {
 if (delta > 0) {
-// Increases apply immediately
 detailPendingDecrease = null;
 renderDetailBadge(stableRec);
 console.log('[AllocRec] Detail burst complete (increase) | samples: ' + detailSamples.join(',') + ' | median: ' + medianNeeded);
 } else if (delta < 0) {
-// Decreases require two consecutive cycles to confirm
 if (detailPendingDecrease !== null && detailPendingDecrease === medianNeeded) {
 renderDetailBadge(stableRec);
 console.log('[AllocRec] Detail burst complete (decrease confirmed) | samples: ' + detailSamples.join(',') + ' | median: ' + medianNeeded);
 detailPendingDecrease = null;
 } else {
 detailPendingDecrease = medianNeeded;
-console.log('[AllocRec] Detail burst complete (decrease pending 2nd confirm) | samples: ' + detailSamples.join(',') + ' | median: ' + medianNeeded);
+console.log('[AllocRec] Detail burst complete (decrease pending) | samples: ' + detailSamples.join(',') + ' | median: ' + medianNeeded);
 }
 } else {
-// No change
 detailPendingDecrease = null;
 renderDetailBadge(stableRec);
 console.log('[AllocRec] Detail burst complete (no-change) | samples: ' + detailSamples.join(',') + ' | median: ' + medianNeeded);
 }
+}
 detailSamples = [];
 if (detailBurstTimer) { clearTimeout(detailBurstTimer); detailBurstTimer = null; }
-// Schedule next burst cycle at 30 minutes
 if (detailCycleTimer) clearTimeout(detailCycleTimer);
 detailCycleTimer = setTimeout(function() {
+detailCycleTimer = null;
+if (isInDarkWindow()) {
+pauseForDarkWindow();
+} else {
 startDetailBurst();
+}
 }, CYCLE_MS);
 }
 }
 
 function startDetailBurst() {
+if (isInDarkWindow()) {
+pauseForDarkWindow();
+return;
+}
 detailSamples = [];
 var count = 0;
 function takeSample() {
+if (isInDarkWindow()) {
+pauseForDarkWindow();
+return;
+}
 var rec = calcDetail();
 renderDetailWithSample(rec);
 count++;
@@ -700,8 +848,9 @@ for (var i = 0; i < bb.length; i++) bb[i].remove();
 listLoaded = false;
 detailSamples = [];
 detailPendingDecrease = null;
-if (detailBurstTimer) { clearTimeout(detailBurstTimer); detailBurstTimer = null; }
-if (detailCycleTimer) { clearTimeout(detailCycleTimer); detailCycleTimer = null; }
+detailCycleCount = 0;
+detailCycle1Median = null;
+clearAllDetailTimers();
 }
 
 function run() {
