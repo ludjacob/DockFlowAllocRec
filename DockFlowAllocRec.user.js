@@ -337,7 +337,7 @@
         var per = [];
         for (var i = 0; i < wip.length; i++) {
             var n = 0;
-            if (wip[i] > 0) n = Math.ceil(wip[i] / hm[i] / avg);
+            if (wip[i] > 0) n = Math.round(wip[i] / hm[i] / avg);
             n = Math.max(n, minA);
             per.push({interval: intervals[i], needed: n, delta: n - alloc});
         }
@@ -382,7 +382,7 @@
         var per = [];
         for (var i = 0; i < wip.length; i++) {
             var n = 0;
-            if (wip[i] > 0) n = Math.ceil(wip[i] / hm[i] / avg);
+            if (wip[i] > 0) n = Math.round(wip[i] / hm[i] / avg);
             n = Math.max(n, minA);
             per.push({interval: intervals[i], needed: n, delta: n - alloc});
         }
