@@ -65,6 +65,15 @@ darkWindows: '05:00-07:30,18:00-18:30'
 };
 
 var listLoaded = false;
+    var EXCLUDED_ARCS = ['KICKOUT', 'DZ-P-P'];
+
+function isExcludedArc(name) {
+    var upper = name.toUpperCase();
+    for (var i = 0; i < EXCLUDED_ARCS.length; i++) {
+        if (upper.indexOf(EXCLUDED_ARCS[i]) !== -1) return true;
+    }
+    return false;
+}
 
 var GRAPHQL_ENDPOINT = 'https://rtyxxulvlvberovj325a3rxppq.appsync-api.us-east-1.amazonaws.com/graphql';
 
@@ -402,6 +411,7 @@ run();
 // CHANGE 1: Math.round instead of Math.ceil in calcDetail
 function calcDetail() {
 var arcName = getArcName();
+    if (isExcludedArc(arcName)) return null;
 var avg = getAvg(arcName);
 var wip = scrapeFuture();
 var alloc = scrapeAlloc();
@@ -437,6 +447,7 @@ minAlloc: minA
 
 // CHANGE 1: Math.round instead of Math.ceil in calcDetailFromGQL
 function calcDetailFromGQL(arcName, projected, workcells) {
+    if (isExcludedArc(arcName)) return null;
 var avg = getAvg(arcName);
 var intervalKeys = ['MIN_15', 'MIN_30', 'HR_1', 'HR_2', 'HR_4', 'HR_8', 'HR_24'];
 var wip = [];
@@ -756,6 +767,7 @@ if (cells.length < 5) continue;
 var name = cells[0].textContent.trim();
 if (!name || name.length < 3 || !/[A-Za-z]/.test(name)) continue;
 if ((/^arc\s*name$/i).test(name)) continue;
+    if (isExcludedArc(name)) continue;
 arcRows.push({row: rows[r], name: name, aCell: cells[4]});
 }
 console.log('[AllocRec] List | arc rows found: ' + arcRows.length);
