@@ -639,26 +639,38 @@ startDetailBurst();
 }
 
 function startDetailBurst() {
-if (isInDarkWindow()) {
-pauseForDarkWindow();
-return;
+    if (detailCycleTimer || detailBurstTimer) return;
+    if (isInDarkWindow()) {
+        var rec = calcDetail();
+        if (rec) renderDetailBadge(rec);
+        var wait = msUntilDarkWindowEnd();
+        console.log('[AllocRec] Dark window - showing preliminary, real cycle in ' + Math.round(wait / 60000) + ' min');
+        detailDarkTimer = setTimeout(function() {
+            detailDarkTimer = null;
+            detailCycleCount = 0;
+            detailCycle1Median = null;
+            detailPendingDecrease = null;
+            startDetailBurst();
+        }, wait);
+        return;
+    }
+    detailSamples = [];
+    var count = 0;
+    function takeSample() {
+        if (isInDarkWindow()) {
+            pauseForDarkWindow();
+            return;
+        }
+        var rec = calcDetail();
+        renderDetailWithSample(rec);
+        count++;
+        if (count < BURST_COUNT) {
+            detailBurstTimer = setTimeout(takeSample, BURST_INTERVAL_MS);
+        }
+    }
+    takeSample();
 }
-detailSamples = [];
-var count = 0;
-function takeSample() {
-if (isInDarkWindow()) {
-pauseForDarkWindow();
-return;
-}
-var rec = calcDetail();
-renderDetailWithSample(rec);
-count++;
-if (count < BURST_COUNT) {
-detailBurstTimer = setTimeout(takeSample, BURST_INTERVAL_MS);
-}
-}
-takeSample();
-}
+
 
 function renderDetailBadge(rec) {
 var badge = document.getElementById('alloc-rec-badge');
