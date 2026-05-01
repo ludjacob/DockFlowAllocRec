@@ -426,7 +426,8 @@ var hm = [0.25, 0.5, 1, 2, 4, 8, 24];
 var per = [];
 for (var i = 0; i < wip.length; i++) {
 var n = 0;
-if (wip[i] > 0) n = Math.round(wip[i] / hm[i] / avg);
+var w = (getArcType(arcName) === 'TOTE') ? wip[i] / 3.5 : wip[i];
+if (w > 0) n = Math.round(w / hm[i] / avg);;
 n = Math.max(n, minA);
 per.push({interval: intervals[i], needed: n, delta: n - alloc});
 }
@@ -476,7 +477,8 @@ var hm = [0.25, 0.5, 1, 2, 4, 8, 24];
 var per = [];
 for (var i = 0; i < wip.length; i++) {
 var n = 0;
-if (wip[i] > 0) n = Math.round(wip[i] / hm[i] / avg);
+var w = (getArcType(arcName) === 'TOTE') ? wip[i] / 3.5 : wip[i];
+if (w > 0) n = Math.round(w / hm[i] / avg);
 n = Math.max(n, minA);
 per.push({interval: intervals[i], needed: n, delta: n - alloc});
 }
