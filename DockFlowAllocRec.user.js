@@ -420,7 +420,7 @@ if (wip[i] > 0) n = Math.round(wip[i] / hm[i] / avg);
 n = Math.max(n, minA);
 per.push({interval: intervals[i], needed: n, delta: n - alloc});
 }
-var pn = Math.max(Math.round((per[2].needed + per[3].needed) / 2), minA);
+var pn = Math.max(Math.round((per.needed + per.needed + per.needed) / 3), minA);
 return {
 currentAlloc: alloc,
 containerizeRate: avg,
@@ -466,7 +466,7 @@ if (wip[i] > 0) n = Math.round(wip[i] / hm[i] / avg);
 n = Math.max(n, minA);
 per.push({interval: intervals[i], needed: n, delta: n - alloc});
 }
-var pn = Math.max(Math.round((per[2].needed + per[3].needed) / 2), minA);
+var pn = Math.max(Math.round((per.needed + per.needed + per.needed) / 3), minA);
 return {
 currentAlloc: alloc,
 containerizeRate: avg,
