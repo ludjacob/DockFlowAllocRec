@@ -65,7 +65,7 @@ darkWindows: '05:00-07:30,18:00-18:30'
 };
 
 var listLoaded = false;
-    var EXCLUDED_ARCS = ['KICKOUT', 'DZ-P-P'];
+    var EXCLUDED_ARCS = ['KICKOUT', 'DZ-P'];
 
 function isExcludedArc(name) {
     var upper = name.toUpperCase();
