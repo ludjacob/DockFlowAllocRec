@@ -1,7 +1,8 @@
+
 // ==UserScript==
 // @name         DockFlow Allocation Recommender
 // @namespace    http://tampermonkey.net/
-// @version      3.2.2
+// @version      3.3.0
 // @description  Recommends allocation changes on OBA detail and Arcs list pages
 // @author       Jake
 // @match        https://prod-na.dockflow.robotics.a2z.com/*
@@ -19,7 +20,7 @@ var path = window.location.pathname;
 
 if (path.indexOf('/oba') === -1 && !/\/wc(\?|$)/i.test(path)) return;
 
-console.log('[AllocRec] v3.2.1 loaded | path: ' + path);
+console.log('[AllocRec] v3.3.0 loaded | path: ' + path);
 
 var style = document.createElement('style');
 
@@ -57,11 +58,12 @@ document.head.appendChild(style);
 
 var CONFIG_KEY = 'dockflow_alloc_config';
 
-// DEFAULTS now include dark window fields (default 05:00-07:30 and 18:00-18:30)
+// DEFAULTS now include dark window fields and units per tote
 var DEFAULTS = {
 containerizeRateCase: 85,
 containerizeRateTote: 75,
-darkWindows: '05:00-07:30,18:00-18:30'
+darkWindows: '05:00-07:30,18:00-18:30',
+unitsPerTote: 3.5
 };
 
 var listLoaded = false;
@@ -73,6 +75,11 @@ function isExcludedArc(name) {
         if (upper.indexOf(EXCLUDED_ARCS[i]) !== -1) return true;
     }
     return false;
+}
+
+// Returns true if the arc name ends with _TOTE (case-insensitive)
+function isToteSuffix(name) {
+    return name.toUpperCase().indexOf('_TOTE') === name.length - 5 && name.length >= 5;
 }
 
 var GRAPHQL_ENDPOINT = 'https://rtyxxulvlvberovj325a3rxppq.appsync-api.us-east-1.amazonaws.com/graphql';
@@ -108,14 +115,16 @@ var p = JSON.parse(s);
 return {
 containerizeRateCase: p.containerizeRateCase || DEFAULTS.containerizeRateCase,
 containerizeRateTote: p.containerizeRateTote || DEFAULTS.containerizeRateTote,
-darkWindows: (p.darkWindows !== undefined) ? p.darkWindows : DEFAULTS.darkWindows
+darkWindows: (p.darkWindows !== undefined) ? p.darkWindows : DEFAULTS.darkWindows,
+unitsPerTote: (p.unitsPerTote !== undefined && p.unitsPerTote > 0) ? p.unitsPerTote : DEFAULTS.unitsPerTote
 };
 }
 } catch (e) {}
 return {
 containerizeRateCase: DEFAULTS.containerizeRateCase,
 containerizeRateTote: DEFAULTS.containerizeRateTote,
-darkWindows: DEFAULTS.darkWindows
+darkWindows: DEFAULTS.darkWindows,
+unitsPerTote: DEFAULTS.unitsPerTote
 };
 }
 
@@ -370,7 +379,7 @@ if (box.className && box.className.indexOf('content-wrapper') !== -1) break;
 return box;
 }
 
-// Settings modal now includes dark window fields
+// Settings modal now includes dark window fields and units per tote
 function showSettings() {
 var cfg = getConfig();
 var old = document.getElementById('alloc-rec-overlay');
@@ -383,6 +392,8 @@ ov.innerHTML = '<div id="alloc-rec-modal">' +
 '<input type="number" id="alloc-cfg-cases" value="' + cfg.containerizeRateCase + '" min="1" />' +
 '<label for="alloc-cfg-totes">Tote Containerize Rate (JPH)</label>' +
 '<input type="number" id="alloc-cfg-totes" value="' + cfg.containerizeRateTote + '" min="1" />' +
+'<label for="alloc-cfg-upt">Units Per Tote (for _TOTE arcs only)</label>' +
+'<input type="number" id="alloc-cfg-upt" value="' + cfg.unitsPerTote + '" min="0.1" step="0.1" />' +
 '<label for="alloc-cfg-dark">Dark Windows (HH:MM-HH:MM, comma-separated)</label>' +
 '<input type="text" id="alloc-cfg-dark" value="' + cfg.darkWindows + '" ' +
 'placeholder="05:00-07:30,18:00-18:30" />' +
@@ -400,22 +411,27 @@ if (e.target === ov) ov.remove();
 document.getElementById('alloc-cfg-save').addEventListener('click', function() {
 var c = parseInt(document.getElementById('alloc-cfg-cases').value) || DEFAULTS.containerizeRateCase;
 var t = parseInt(document.getElementById('alloc-cfg-totes').value) || DEFAULTS.containerizeRateTote;
+var upt = parseFloat(document.getElementById('alloc-cfg-upt').value);
+if (isNaN(upt) || upt <= 0) upt = DEFAULTS.unitsPerTote;
 var dw = document.getElementById('alloc-cfg-dark').value.trim();
-saveConfig({containerizeRateCase: c, containerizeRateTote: t, darkWindows: dw});
+saveConfig({containerizeRateCase: c, containerizeRateTote: t, unitsPerTote: upt, darkWindows: dw});
 ov.remove();
 listLoaded = false;
 run();
 });
 }
 
-// CHANGE 1: Math.round instead of Math.ceil in calcDetail
+// calcDetail — applies unitsPerTote conversion for _TOTE suffix arcs
 function calcDetail() {
 var arcName = getArcName();
     if (isExcludedArc(arcName)) return null;
 var avg = getAvg(arcName);
+var cfg = getConfig();
+var applyUPT = isToteSuffix(arcName);
+var upt = applyUPT ? cfg.unitsPerTote : 1;
 var wip = scrapeFuture();
 var alloc = scrapeAlloc();
-console.log('[AllocRec] Detail | arc: ' + arcName + ' | type: ' + getArcType(arcName) + ' | rate: ' + avg + ' JPH | wip: ' + JSON.stringify(wip) + ' | alloc: ' + alloc);
+console.log('[AllocRec] Detail | arc: ' + arcName + ' | type: ' + getArcType(arcName) + ' | rate: ' + avg + ' JPH | upt: ' + upt + ' | wip: ' + JSON.stringify(wip) + ' | alloc: ' + alloc);
 if (!wip || alloc === null) return null;
 var minA = 0;
 for (var i = 0; i < 4; i++) {
@@ -426,8 +442,7 @@ var hm = [0.25, 0.5, 1, 2, 4, 8, 24];
 var per = [];
 for (var i = 0; i < wip.length; i++) {
 var n = 0;
-var w = (getArcType(arcName) === 'TOTE') ? wip[i] / 3.5 : wip[i];
-if (w > 0) n = Math.round(w / hm[i] / avg);;
+if (wip[i] > 0) n = Math.round((wip[i] / upt) / hm[i] / avg);
 n = Math.max(n, minA);
 per.push({interval: intervals[i], needed: n, delta: n - alloc});
 }
@@ -439,6 +454,7 @@ return {
 currentAlloc: alloc,
 containerizeRate: avg,
 arcType: getArcType(arcName),
+unitsPerTote: applyUPT ? upt : null,
 perInterval: per,
 primaryDelta: pn - alloc,
 primaryNeeded: pn,
@@ -446,10 +462,13 @@ minAlloc: minA
 };
 }
 
-// CHANGE 1: Math.round instead of Math.ceil in calcDetailFromGQL
+// calcDetailFromGQL — applies unitsPerTote conversion for _TOTE suffix arcs
 function calcDetailFromGQL(arcName, projected, workcells) {
     if (isExcludedArc(arcName)) return null;
 var avg = getAvg(arcName);
+var cfg = getConfig();
+var applyUPT = isToteSuffix(arcName);
+var upt = applyUPT ? cfg.unitsPerTote : 1;
 var intervalKeys = ['MIN_15', 'MIN_30', 'HR_1', 'HR_2', 'HR_4', 'HR_8', 'HR_24'];
 var wip = [];
 for (var k = 0; k < intervalKeys.length; k++) {
@@ -467,7 +486,7 @@ for (var i = 0; i < workcells.length; i++) {
 var wcName = (workcells[i].id && workcells[i].id.name) ? workcells[i].id.name : '';
 if (!containsPID(wcName)) alloc++;
 }
-console.log('[AllocRec] GQL | arc: ' + arcName + ' | rate: ' + avg + ' JPH | wip: ' + JSON.stringify(wip) + ' | alloc: ' + alloc);
+console.log('[AllocRec] GQL | arc: ' + arcName + ' | rate: ' + avg + ' JPH | upt: ' + upt + ' | wip: ' + JSON.stringify(wip) + ' | alloc: ' + alloc);
 var minA = 0;
 for (var i = 0; i < 4; i++) {
 if (wip[i] > 0) { minA = 1; break; }
@@ -477,8 +496,7 @@ var hm = [0.25, 0.5, 1, 2, 4, 8, 24];
 var per = [];
 for (var i = 0; i < wip.length; i++) {
 var n = 0;
-var w = (getArcType(arcName) === 'TOTE') ? wip[i] / 3.5 : wip[i];
-if (w > 0) n = Math.round(w / hm[i] / avg);
+if (wip[i] > 0) n = Math.round((wip[i] / upt) / hm[i] / avg);
 n = Math.max(n, minA);
 per.push({interval: intervals[i], needed: n, delta: n - alloc});
 }
@@ -490,6 +508,7 @@ return {
 currentAlloc: alloc,
 containerizeRate: avg,
 arcType: getArcType(arcName),
+unitsPerTote: applyUPT ? upt : null,
 perInterval: per,
 primaryDelta: pn - alloc,
 primaryNeeded: pn,
@@ -526,20 +545,19 @@ return null;
 });
 }
 
-// CHANGE 2: 30-minute median burst cycle, 3 samples 10 minutes apart.
+// 30-minute median burst cycle, 3 samples 10 minutes apart.
 // First-cycle baseline protection: Cycle 1 is preliminary, Cycle 2 confirms by
 // taking the max of both medians. Cycle 3+ uses normal rules: increases immediate,
 // decreases require two consecutive cycles.
 //
-// CHANGE 3 (v3.2.1 shift gap pausing): During configured dark windows the script
-// holds the last rendered recommendation and skips all sampling. When the dark
-// window ends a fresh burst cycle starts with first-cycle baseline protection
-// (detailCycleCount reset to 0).
+// During configured dark windows the script holds the last rendered recommendation
+// and skips all sampling. When the dark window ends a fresh burst cycle starts
+// with first-cycle baseline protection (detailCycleCount reset to 0).
 
 var detailSamples = [];
 var detailBurstTimer = null;
 var detailCycleTimer = null;
-var detailDarkTimer = null;       // fires when dark window ends
+var detailDarkTimer = null;
 var detailPendingDecrease = null;
 var detailCycleCount = 0;
 var detailCycle1Median = null;
@@ -739,7 +757,12 @@ label = document.createElement('div');
 label.id = 'alloc-rec-forecast-label';
 box.appendChild(label);
 }
-label.textContent = 'Needed Allocations (' + rec.containerizeRate + ' JPH ' + rec.arcType + ')';
+var labelText = 'Needed Allocations (' + rec.containerizeRate + ' JPH ' + rec.arcType;
+if (rec.unitsPerTote !== null) {
+labelText += ' | ' + rec.unitsPerTote + ' UPT';
+}
+labelText += ')';
+label.textContent = labelText;
 if (!row) {
 row = document.createElement('div');
 row.id = 'alloc-rec-forecast-row';
@@ -953,3 +976,4 @@ setTimeout(init, 1000);
 init();
 
 })();
+
