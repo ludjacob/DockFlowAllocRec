@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         DockFlow Allocation Recommender
 // @namespace    http://tampermonkey.net/
-// @version      3.6.0
+// @version      2.1.5
 // @description  Recommends allocation changes on OBA detail and Arcs list pages
 // @author       Jake
 // @match        https://prod-na.dockflow.robotics.a2z.com/*
@@ -465,35 +465,50 @@ run();
 // on direction vs current allocation before recommending a change.
 // When consensus exists, the 2HR value sets the target.
 // When no consensus, hold at on-target.
+// Decreases require 3 consecutive unanimous checks before firing.
 
-function consensusCalc(perInterval, alloc, minA) {
-var oneHr  = perInterval[2].needed;
-var twoHr  = perInterval[3].needed;
-var fourHr = perInterval[4].needed;
+var decreaseConfirmCounts = {};
+
+function consensusCalc(perInterval, alloc, minA, arcKey) {
+var oneHr  = perInterval.needed;
+var twoHr  = perInterval.needed;
+var fourHr = perInterval.needed;
 
 var dir1 = oneHr > alloc ? 1 : (oneHr < alloc ? -1 : 0);
 var dir2 = twoHr > alloc ? 1 : (twoHr < alloc ? -1 : 0);
 var dir4 = fourHr > alloc ? 1 : (fourHr < alloc ? -1 : 0);
 
 var pn;
+var consensus;
+
 if (dir1 > 0 && dir2 > 0 && dir4 > 0) {
     pn = Math.max(twoHr, minA);
+    consensus = 'increase';
+    decreaseConfirmCounts[arcKey] = 0;
 } else if (dir1 < 0 && dir2 < 0 && dir4 < 0) {
-    pn = Math.max(twoHr, minA);
+    decreaseConfirmCounts[arcKey] = (decreaseConfirmCounts[arcKey] || 0) + 1;
+    if (decreaseConfirmCounts[arcKey] >= 3) {
+        pn = Math.max(twoHr, minA);
+        consensus = 'decrease';
+    } else {
+        pn = alloc;
+        consensus = 'pending-decrease (' + decreaseConfirmCounts[arcKey] + '/3)';
+    }
 } else {
     pn = alloc;
+    consensus = 'none';
+    decreaseConfirmCounts[arcKey] = 0;
 }
 
 var delta = clampDelta(pn - alloc);
-var consensus = (dir1 > 0 && dir2 > 0 && dir4 > 0) ? 'increase' :
-                (dir1 < 0 && dir2 < 0 && dir4 < 0) ? 'decrease' : 'none';
 
-console.log('[AllocRec] Consensus | 1HR=' + oneHr + ' 2HR=' + twoHr + ' 4HR=' + fourHr +
+console.log('[AllocRec] Consensus | ' + arcKey + ' | 1HR=' + oneHr + ' 2HR=' + twoHr + ' 4HR=' + fourHr +
     ' | dirs=' + dir1 + '/' + dir2 + '/' + dir4 +
     ' | consensus=' + consensus + ' | target=' + pn + ' | delta=' + delta);
 
 return {primaryNeeded: pn, primaryDelta: delta, consensus: consensus};
 }
+
 
 function calcDetail() {
 var arcName = getArcName();
@@ -565,7 +580,7 @@ if (w > 0) n = Math.round(w / hm[i] / avg);
 n = Math.max(n, minA);
 per.push({interval: intervals[i], needed: n, delta: n - alloc});
 }
-var result = consensusCalc(per, alloc, minA);
+var result = consensusCalc(per, alloc, minA, arcName);
 return {
 currentAlloc:      alloc,
 containerizeRate:  avg,
