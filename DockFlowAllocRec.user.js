@@ -17,7 +17,6 @@
 'use strict';
 
 var path = window.location.pathname;
-
 if (path.indexOf('/oba') === -1 && !/\/wc(\?|$)/i.test(path)) return;
 
 console.log('[AllocRec] v3.4.0 loaded | path: ' + path);
@@ -57,906 +56,946 @@ document.head.appendChild(style);
 
 var CONFIG_KEY = 'dockflow_alloc_config';
 
+// DEFAULTS: four shift fields for day and night shift auto-freeze (45 min before each shift end)
 var DEFAULTS = {
-containerizeRateCase: 85,
-containerizeRateTote: 75,
-unitsPerTote: 3.5,
-darkWindows: '05:00-07:30,18:00-18:30'
+    containerizeRateCase: 85,
+    containerizeRateTote: 75,
+    unitsPerTote:         3.5,
+    dayShiftStart:  '07:30',
+    dayShiftEnd:    '18:00',
+    nightShiftStart: '18:30',
+    nightShiftEnd:  '05:00'
 };
 
 var listLoaded = false;
-
 var EXCLUDED_ARCS = ['KICKOUT', 'DZ-P'];
 
 function isExcludedArc(name) {
-var upper = name.toUpperCase();
-for (var i = 0; i < EXCLUDED_ARCS.length; i++) {
-if (upper.indexOf(EXCLUDED_ARCS[i]) !== -1) return true;
-}
-return false;
+    var upper = name.toUpperCase();
+    for (var i = 0; i < EXCLUDED_ARCS.length; i++) {
+        if (upper.indexOf(EXCLUDED_ARCS[i]) !== -1) return true;
+    }
+    return false;
 }
 
 var GRAPHQL_ENDPOINT = 'https://rtyxxulvlvberovj325a3rxppq.appsync-api.us-east-1.amazonaws.com/graphql';
 
 // GQL query includes aggregateRate for break detection (v3.4.0)
 var GQL_QUERY = [
-'query getOutboundArc($siteName: String!, $outboundArcName: String!) {',
-'  outboundArc(siteName: $siteName, outboundArcName: $outboundArcName) {',
-'    name',
-'    workcells {',
-'      id {',
-'        name',
-'        type',
-'        siteName',
-'      }',
-'    }',
-'    workState {',
-'      rate {',
-'        aggregateRate',
-'        projected {',
-'          interval',
-'          rate',
-'        }',
-'      }',
-'    }',
-'  }',
-'}'
+    'query getOutboundArc($siteName: String!, $outboundArcName: String!) {',
+    '  outboundArc(siteName: $siteName, outboundArcName: $outboundArcName) {',
+    '    name',
+    '    workcells {',
+    '      id {',
+    '        name',
+    '        type',
+    '        siteName',
+    '      }',
+    '    }',
+    '    workState {',
+    '      rate {',
+    '        aggregateRate',
+    '        projected {',
+    '          interval',
+    '          rate',
+    '        }',
+    '      }',
+    '    }',
+    '  }',
+    '}'
 ].join('');
 
 function getConfig() {
-try {
-var s = localStorage.getItem(CONFIG_KEY);
-if (s) {
-var p = JSON.parse(s);
-return {
-containerizeRateCase: p.containerizeRateCase || DEFAULTS.containerizeRateCase,
-containerizeRateTote: p.containerizeRateTote || DEFAULTS.containerizeRateTote,
-unitsPerTote: (p.unitsPerTote !== undefined) ? p.unitsPerTote : DEFAULTS.unitsPerTote,
-darkWindows: (p.darkWindows !== undefined) ? p.darkWindows : DEFAULTS.darkWindows
-};
-}
-} catch (e) {}
-return {
-containerizeRateCase: DEFAULTS.containerizeRateCase,
-containerizeRateTote: DEFAULTS.containerizeRateTote,
-unitsPerTote: DEFAULTS.unitsPerTote,
-darkWindows: DEFAULTS.darkWindows
-};
+    try {
+        var s = localStorage.getItem(CONFIG_KEY);
+        if (s) {
+            var p = JSON.parse(s);
+            return {
+                containerizeRateCase:  p.containerizeRateCase  || DEFAULTS.containerizeRateCase,
+                containerizeRateTote:  p.containerizeRateTote  || DEFAULTS.containerizeRateTote,
+                unitsPerTote:         (p.unitsPerTote         !== undefined) ? p.unitsPerTote         : DEFAULTS.unitsPerTote,
+                dayShiftStart:        (p.dayShiftStart        !== undefined) ? p.dayShiftStart        : DEFAULTS.dayShiftStart,
+                dayShiftEnd:          (p.dayShiftEnd          !== undefined) ? p.dayShiftEnd          : DEFAULTS.dayShiftEnd,
+                nightShiftStart:      (p.nightShiftStart      !== undefined) ? p.nightShiftStart      : DEFAULTS.nightShiftStart,
+                nightShiftEnd:        (p.nightShiftEnd        !== undefined) ? p.nightShiftEnd        : DEFAULTS.nightShiftEnd
+            };
+        }
+    } catch (e) {}
+    return {
+        containerizeRateCase:  DEFAULTS.containerizeRateCase,
+        containerizeRateTote:  DEFAULTS.containerizeRateTote,
+        unitsPerTote:          DEFAULTS.unitsPerTote,
+        dayShiftStart:         DEFAULTS.dayShiftStart,
+        dayShiftEnd:           DEFAULTS.dayShiftEnd,
+        nightShiftStart:       DEFAULTS.nightShiftStart,
+        nightShiftEnd:         DEFAULTS.nightShiftEnd
+    };
 }
 
 function saveConfig(cfg) {
-localStorage.setItem(CONFIG_KEY, JSON.stringify(cfg));
+    localStorage.setItem(CONFIG_KEY, JSON.stringify(cfg));
 }
 
-// ─── DARK WINDOW HELPERS ──────────────────────────────────────────────────────
+// --- SHIFT / AUTO-FREEZE HELPERS -----------------------------------------
 
 function parseHHMM(str) {
-var parts = str.trim().split(':');
-if (parts.length !== 2) return null;
-var h = parseInt(parts[0], 10);
-var m = parseInt(parts[1], 10);
-if (isNaN(h) || isNaN(m)) return null;
-return h * 60 + m;
+    var parts = str.trim().split(':');
+    if (parts.length !== 2) return null;
+    var h = parseInt(parts[0], 10);
+    var m = parseInt(parts[1], 10);
+    if (isNaN(h) || isNaN(m)) return null;
+    return h * 60 + m;
 }
 
-function parseDarkWindows(str) {
-if (!str || !str.trim()) return [];
-var windows = [];
-var segments = str.split(',');
-for (var i = 0; i < segments.length; i++) {
-var seg = segments[i].trim();
-if (!seg) continue;
-var dash = seg.indexOf('-');
-if (dash === -1) continue;
-var s = parseHHMM(seg.substring(0, dash));
-var e = parseHHMM(seg.substring(dash + 1));
-if (s !== null && e !== null) windows.push({start: s, end: e});
-}
-return windows;
+// Returns which shift is currently active: "day", "night", or null.
+// Also returns the active shiftEnd time in minutes.
+function getActiveShift() {
+    var cfg  = getConfig();
+    var now  = new Date();
+    var cur  = now.getHours() * 60 + now.getMinutes();
+
+    var ds = parseHHMM(cfg.dayShiftStart);
+    var de = parseHHMM(cfg.dayShiftEnd);
+    var ns = parseHHMM(cfg.nightShiftStart);
+    var ne = parseHHMM(cfg.nightShiftEnd);
+
+    // Day shift: ds <= cur < de
+    if (ds !== null && de !== null && cur >= ds && cur < de) {
+        return { shift: 'day', endMin: de };
+    }
+    // Night shift: ns <= cur < midnight  OR  0 <= cur < ne
+    if (ns !== null && ne !== null) {
+        if (cur >= ns) {                        // evening side of night shift
+            return { shift: 'night', endMin: ne };
+        }
+        if (cur < ne) {                         // past-midnight side of night shift
+            return { shift: 'night', endMin: ne };
+        }
+    }
+    return null;
 }
 
-function isInDarkWindow() {
-var cfg = getConfig();
-var windows = parseDarkWindows(cfg.darkWindows);
-if (!windows.length) return false;
-var now = new Date();
-var cur = now.getHours() * 60 + now.getMinutes();
-for (var i = 0; i < windows.length; i++) {
-if (cur >= windows[i].start && cur < windows[i].end) return true;
-}
-return false;
-}
-
-function msUntilDarkWindowEnd() {
-var cfg = getConfig();
-var windows = parseDarkWindows(cfg.darkWindows);
-var now = new Date();
-var cur = now.getHours() * 60 + now.getMinutes();
-for (var i = 0; i < windows.length; i++) {
-if (cur >= windows[i].start && cur < windows[i].end) {
-var minsLeft = windows[i].end - cur;
-minsLeft -= (now.getSeconds() / 60);
-return Math.max(0, minsLeft * 60 * 1000);
-}
-}
-return 0;
+// Return true if current time is within 45 minutes before the active shift end.
+function isInAutoFreeze() {
+    var active = getActiveShift();
+    if (!active) return false;
+    var now = new Date();
+    var cur = now.getHours() * 60 + now.getMinutes();
+    var endMin = active.endMin;
+    // Handle midnight wrap for night shift
+    if (active.shift === 'night' && endMin < 360) {
+        // endMin is early morning (e.g. 300 = 05:00)
+        // cur is either >= nightShiftStart (evening) or < endMin (post-midnight)
+        if (cur >= 1320) {   // after 22:00 -- check if within 45 min of midnight-wrapped end
+            return cur >= (1440 + endMin - 45);
+        }
+        return cur < endMin && cur >= (endMin - 45);
+    }
+    return cur >= (endMin - 45) && cur < endMin;
 }
 
-// ─── END DARK WINDOW HELPERS ──────────────────────────────────────────────────
+// Return milliseconds until auto-freeze window ends (i.e., until shiftEnd).
+function msUntilFreezeEnd() {
+    var active = getActiveShift();
+    if (!active) return 0;
+    var now     = new Date();
+    var cur     = now.getHours() * 60 + now.getMinutes();
+    var endMin  = active.endMin;
+    var minsLeft;
+    if (active.shift === 'night' && endMin < 360 && cur >= 1320) {
+        minsLeft = (1440 - cur) + endMin;
+    } else {
+        minsLeft = endMin - cur;
+    }
+    minsLeft -= (now.getSeconds() / 60);
+    return Math.max(0, minsLeft * 60 * 1000);
+}
+
+// --- END SHIFT / AUTO-FREEZE HELPERS -------------------------------------
 
 function containsPID(str) {
-return str.toUpperCase().indexOf('PID') !== -1;
+    return str.toUpperCase().indexOf('PID') !== -1;
 }
 
 function getArcType(name) {
-return name.toUpperCase().indexOf('TOTE') !== -1 ? 'TOTE' : 'CASE';
+    return name.toUpperCase().indexOf('TOTE') !== -1 ? 'TOTE' : 'CASE';
 }
 
 function getAvg(name) {
-var c = getConfig();
-return getArcType(name) === 'TOTE' ? c.containerizeRateTote : c.containerizeRateCase;
+    var c = getConfig();
+    return getArcType(name) === 'TOTE' ? c.containerizeRateTote : c.containerizeRateCase;
 }
 
 function getArcName() {
-var parts = path.split('/');
-return parts[parts.length - 1] || '';
+    var parts = path.split('/');
+    return parts[parts.length - 1] || '';
 }
 
 function getSiteName() {
-var parts = path.split('/');
-var out = [];
-for (var i = 0; i < parts.length; i++) {
-if (parts[i].length > 0) out.push(parts[i]);
-}
-return out.length >= 1 ? out[0] : '';
+    var parts = path.split('/');
+    var out = [];
+    for (var i = 0; i < parts.length; i++) {
+        if (parts[i].length > 0) out.push(parts[i]);
+    }
+    return out.length >= 1 ? out[0] : '';
 }
 
 function getSegs() {
-var s = path.split('/');
-var out = [];
-for (var i = 0; i < s.length; i++) {
-if (s[i].length > 0) out.push(s[i]);
-}
-return out;
+    var s = path.split('/');
+    var out = [];
+    for (var i = 0; i < s.length; i++) {
+        if (s[i].length > 0) out.push(s[i]);
+    }
+    return out;
 }
 
 function isDetail() {
-var s = getSegs();
-return s.length >= 3 && s[1] === 'oba' && s[2].length > 0;
+    var s = getSegs();
+    return s.length >= 3 && s[1] === 'oba' && s[2].length > 0;
 }
 
 function isList() {
-var s = getSegs();
-if (s.length === 2 && s[1] === 'oba') return true;
-var h2s = document.querySelectorAll('h2');
-for (var i = 0; i < h2s.length; i++) {
-if ((/arcs\s*\(/i).test(h2s[i].textContent)) return true;
-}
-return false;
+    var s = getSegs();
+    if (s.length === 2 && s[1] === 'oba') return true;
+    var h2s = document.querySelectorAll('h2');
+    for (var i = 0; i < h2s.length; i++) {
+        if ((/arcs\s*\(/i).test(h2s[i].textContent)) return true;
+    }
+    return false;
 }
 
 function findCSHeading(text) {
-var spans = document.querySelectorAll('h2 span[data-analytics-funnel-key="substep-name"]');
-for (var i = 0; i < spans.length; i++) {
-var nodes = spans[i].childNodes;
-var t = '';
-for (var j = 0; j < nodes.length; j++) {
-if (nodes[j].nodeType === Node.TEXT_NODE) t += nodes[j].textContent.trim();
-}
-if (t.toLowerCase().indexOf(text.toLowerCase()) !== -1) return spans[i];
-}
-return null;
+    var spans = document.querySelectorAll('h2 span[data-analytics-funnel-key="substep-name"]');
+    for (var i = 0; i < spans.length; i++) {
+        var nodes = spans[i].childNodes;
+        var t = '';
+        for (var j = 0; j < nodes.length; j++) {
+            if (nodes[j].nodeType === Node.TEXT_NODE) t += nodes[j].textContent.trim();
+        }
+        if (t.toLowerCase().indexOf(text.toLowerCase()) !== -1) return spans[i];
+    }
+    return null;
 }
 
 function findH2(text) {
-var h2s = document.querySelectorAll('h2');
-for (var i = 0; i < h2s.length; i++) {
-if (h2s[i].textContent.toLowerCase().indexOf(text.toLowerCase()) !== -1) return h2s[i];
-}
-return null;
+    var h2s = document.querySelectorAll('h2');
+    for (var i = 0; i < h2s.length; i++) {
+        if (h2s[i].textContent.toLowerCase().indexOf(text.toLowerCase()) !== -1) return h2s[i];
+    }
+    return null;
 }
 
 function scrapeFuture() {
-var h = findCSHeading('Future');
-if (!h) return null;
-var box = h.closest('[class*="content-wrapper"]');
-if (!box) {
-box = h;
-for (var i = 0; i < 6; i++) {
-box = box.parentElement;
-if (!box) return null;
-if (box.className && box.className.indexOf('content-wrapper') !== -1) break;
-}
-}
-var els = box.querySelectorAll('*');
-var nums = [];
-for (var i = 0; i < els.length; i++) {
-if (/^\d+$/.test(els[i].textContent.trim()) && els[i].children.length === 0) {
-nums.push(els[i]);
-}
-}
-if (nums.length >= 7) {
-var r = [];
-for (var i = 0; i < 7; i++) r.push(parseInt(nums[i].textContent.trim()));
-return r;
-}
-return null;
+    var h = findCSHeading('Future');
+    if (!h) return null;
+    var box = h.closest('[class*="content-wrapper"]');
+    if (!box) {
+        box = h;
+        for (var i = 0; i < 6; i++) {
+            box = box.parentElement;
+            if (!box) return null;
+            if (box.className && box.className.indexOf('content-wrapper') !== -1) break;
+        }
+    }
+    var els  = box.querySelectorAll('*');
+    var nums = [];
+    for (var i = 0; i < els.length; i++) {
+        if (/^\d+$/.test(els[i].textContent.trim()) && els[i].children.length === 0) {
+            nums.push(els[i]);
+        }
+    }
+    if (nums.length >= 7) {
+        var r = [];
+        for (var i = 0; i < 7; i++) r.push(parseInt(nums[i].textContent.trim()));
+        return r;
+    }
+    return null;
 }
 
 function scrapeAlloc() {
-var assignH2 = findAssignH2();
-if (assignH2) {
-var container = assignH2.closest('[class*="content-wrapper"]');
-if (!container) {
-container = assignH2;
-for (var i = 0; i < 8; i++) {
-container = container.parentElement;
-if (!container) break;
-if (container.className && container.className.indexOf('content-wrapper') !== -1) break;
-}
-}
-if (container) {
-var allEls = container.querySelectorAll('*');
-var cur = 0;
-for (var i = 0; i < allEls.length; i++) {
-var el = allEls[i];
-if (el.children.length > 0) continue;
-var txt = el.textContent.trim();
-if (txt.toLowerCase() === 'sorterlane') {
-var nameEl = el.previousElementSibling ||
-(el.parentElement ? el.parentElement.previousElementSibling : null);
-if (!nameEl && el.parentElement) {
-var siblings = el.parentElement.querySelectorAll('*');
-for (var j = 0; j < siblings.length; j++) {
-if (siblings[j].textContent.trim().toLowerCase() !== 'sorterlane' &&
-siblings[j].children.length === 0 &&
-siblings[j].textContent.trim().length > 2) {
-nameEl = siblings[j];
-break;
-}
-}
-}
-var wcName = nameEl ? nameEl.textContent.trim() : '';
-if (!containsPID(wcName)) cur++;
-}
-}
-if (cur > 0) {
-console.log('[AllocRec] scrapeAlloc scoped count: ' + cur);
-return cur;
-}
-}
-}
-var spans = document.querySelectorAll('span[class*="counter"]');
-for (var i = 0; i < spans.length; i++) {
-var prev = spans[i].previousElementSibling;
-if (prev && (/Arc Assignments/i).test(prev.textContent)) {
-var m = spans[i].textContent.match(/(\d+)/);
-if (m) return parseInt(m[1]);
-}
-}
-var all = document.querySelectorAll('*');
-for (var i = 0; i < all.length; i++) {
-var el = all[i];
-var txt = el.textContent.trim();
-var m = txt.match(/Arc Assignments\s*\((\d+)\)/i);
-if (m && el.children.length < 5) return parseInt(m[1]);
-}
-return null;
+    var assignH2 = findAssignH2();
+    if (assignH2) {
+        var container = assignH2.closest('[class*="content-wrapper"]');
+        if (!container) {
+            container = assignH2;
+            for (var i = 0; i < 8; i++) {
+                container = container.parentElement;
+                if (!container) break;
+                if (container.className && container.className.indexOf('content-wrapper') !== -1) break;
+            }
+        }
+        if (container) {
+            var allEls = container.querySelectorAll('*');
+            var cur    = 0;
+            for (var i = 0; i < allEls.length; i++) {
+                var el  = allEls[i];
+                if (el.children.length > 0) continue;
+                var txt = el.textContent.trim();
+                if (txt.toLowerCase() === 'sorterlane') {
+                    var nameEl = el.previousElementSibling ||
+                        (el.parentElement ? el.parentElement.previousElementSibling : null);
+                    if (!nameEl && el.parentElement) {
+                        var siblings = el.parentElement.querySelectorAll('*');
+                        for (var j = 0; j < siblings.length; j++) {
+                            if (siblings[j].textContent.trim().toLowerCase() !== 'sorterlane' &&
+                                siblings[j].children.length === 0 &&
+                                siblings[j].textContent.trim().length > 2) {
+                                nameEl = siblings[j];
+                                break;
+                            }
+                        }
+                    }
+                    var wcName = nameEl ? nameEl.textContent.trim() : '';
+                    if (!containsPID(wcName)) cur++;
+                }
+            }
+            if (cur > 0) {
+                console.log('[AllocRec] scrapeAlloc scoped count: ' + cur);
+                return cur;
+            }
+        }
+    }
+    var spans = document.querySelectorAll('span[class*="counter"]');
+    for (var i = 0; i < spans.length; i++) {
+        var prev = spans[i].previousElementSibling;
+        if (prev && (/Arc Assignments/i).test(prev.textContent)) {
+            var m = spans[i].textContent.match(/(\d+)/);
+            if (m) return parseInt(m[1]);
+        }
+    }
+    var all = document.querySelectorAll('*');
+    for (var i = 0; i < all.length; i++) {
+        var el  = all[i];
+        var txt = el.textContent.trim();
+        var m   = txt.match(/Arc Assignments\s*\((\d+)\)/i);
+        if (m && el.children.length < 5) return parseInt(m[1]);
+    }
+    return null;
 }
 
 function findAssignH2() {
-var h = findCSHeading('Arc Assignments');
-if (h) return h.closest('h2') || h.parentElement;
-var all = document.querySelectorAll('h2, div, span');
-for (var i = 0; i < all.length; i++) {
-var el = all[i];
-if ((/Arc Assignments/i).test(el.textContent.trim()) && el.children.length < 5) return el;
-}
-return null;
+    var h = findCSHeading('Arc Assignments');
+    if (h) return h.closest('h2') || h.parentElement;
+    var all = document.querySelectorAll('h2, div, span');
+    for (var i = 0; i < all.length; i++) {
+        var el = all[i];
+        if ((/Arc Assignments/i).test(el.textContent.trim()) && el.children.length < 5) return el;
+    }
+    return null;
 }
 
 function findFutureBox() {
-var h = findCSHeading('Future');
-if (!h) return null;
-var box = h.closest('[class*="content-wrapper"]');
-if (!box) {
-box = h;
-for (var i = 0; i < 6; i++) {
-box = box.parentElement;
-if (!box) return null;
-if (box.className && box.className.indexOf('content-wrapper') !== -1) break;
-}
-}
-return box;
+    var h = findCSHeading('Future');
+    if (!h) return null;
+    var box = h.closest('[class*="content-wrapper"]');
+    if (!box) {
+        box = h;
+        for (var i = 0; i < 6; i++) {
+            box = box.parentElement;
+            if (!box) return null;
+            if (box.className && box.className.indexOf('content-wrapper') !== -1) break;
+        }
+    }
+    return box;
 }
 
 function showSettings() {
-var cfg = getConfig();
-var old = document.getElementById('alloc-rec-overlay');
-if (old) old.remove();
-var ov = document.createElement('div');
-ov.id = 'alloc-rec-overlay';
-ov.innerHTML = '<div id="alloc-rec-modal">' +
-'<h3>&#9881;&#65039; Allocation Recommender Settings</h3>' +
-'<label for="alloc-cfg-cases">Case Containerize Rate (JPH)</label>' +
-'<input type="number" id="alloc-cfg-cases" value="' + cfg.containerizeRateCase + '" min="1" />' +
-'<label for="alloc-cfg-totes">Tote Containerize Rate (JPH)</label>' +
-'<input type="number" id="alloc-cfg-totes" value="' + cfg.containerizeRateTote + '" min="1" />' +
-'<label for="alloc-cfg-upt">Units Per Tote</label>' +
-'<input type="number" id="alloc-cfg-upt" value="' + cfg.unitsPerTote + '" min="0.1" step="0.5" />' +
-'<label for="alloc-cfg-dark">Dark Windows (HH:MM-HH:MM, comma-separated)</label>' +
-'<input type="text" id="alloc-cfg-dark" value="' + cfg.darkWindows + '" ' +
-'placeholder="05:00-07:30,18:00-18:30" />' +
-'<div class="alloc-rec-btn-row">' +
-'<button class="alloc-rec-btn secondary" id="alloc-cfg-cancel">Cancel</button>' +
-'<button class="alloc-rec-btn primary" id="alloc-cfg-save">Save</button>' +
-'</div></div>';
-document.body.appendChild(ov);
-document.getElementById('alloc-cfg-cancel').addEventListener('click', function() {
-ov.remove();
-});
-ov.addEventListener('click', function(e) {
-if (e.target === ov) ov.remove();
-});
-document.getElementById('alloc-cfg-save').addEventListener('click', function() {
-var c = parseInt(document.getElementById('alloc-cfg-cases').value) || DEFAULTS.containerizeRateCase;
-var t = parseInt(document.getElementById('alloc-cfg-totes').value) || DEFAULTS.containerizeRateTote;
-var upt = parseFloat(document.getElementById('alloc-cfg-upt').value) || DEFAULTS.unitsPerTote;
-var dw = document.getElementById('alloc-cfg-dark').value.trim();
-saveConfig({containerizeRateCase: c, containerizeRateTote: t, unitsPerTote: upt, darkWindows: dw});
-ov.remove();
-listLoaded = false;
-run();
-});
+    var cfg = getConfig();
+    var old = document.getElementById('alloc-rec-overlay');
+    if (old) old.remove();
+    var ov  = document.createElement('div');
+    ov.id   = 'alloc-rec-overlay';
+    ov.innerHTML =
+        '<div id="alloc-rec-modal">' +
+        '<h3>&#9881;&#65039; Allocation Recommender Settings</h3>' +
+        '<label for="alloc-cfg-cases">Case Containerize Rate (JPH)</label>' +
+        '<input type="number" id="alloc-cfg-cases" value="' + cfg.containerizeRateCase + '" min="1" />' +
+        '<label for="alloc-cfg-totes">Tote Containerize Rate (JPH)</label>' +
+        '<input type="number" id="alloc-cfg-totes" value="' + cfg.containerizeRateTote + '" min="1" />' +
+        '<label for="alloc-cfg-upt">Units Per Tote</label>' +
+        '<input type="number" id="alloc-cfg-upt" value="' + cfg.unitsPerTote + '" min="0.1" step="0.5" />' +
+        '<label for="alloc-cfg-ds">Day Shift Start (HH:MM)</label>' +
+        '<input type="text" id="alloc-cfg-ds" value="' + cfg.dayShiftStart + '" placeholder="07:30" />' +
+        '<label for="alloc-cfg-de">Day Shift End (HH:MM)</label>' +
+        '<input type="text" id="alloc-cfg-de" value="' + cfg.dayShiftEnd + '" placeholder="18:00" />' +
+        '<label for="alloc-cfg-ns">Night Shift Start (HH:MM)</label>' +
+        '<input type="text" id="alloc-cfg-ns" value="' + cfg.nightShiftStart + '" placeholder="18:30" />' +
+        '<label for="alloc-cfg-ne">Night Shift End (HH:MM)</label>' +
+        '<input type="text" id="alloc-cfg-ne" value="' + cfg.nightShiftEnd + '" placeholder="05:00" />' +
+        '<div class="alloc-rec-btn-row">' +
+        '<button class="alloc-rec-btn secondary" id="alloc-cfg-cancel">Cancel</button>' +
+        '<button class="alloc-rec-btn primary" id="alloc-cfg-save">Save</button>' +
+        '</div></div>';
+    document.body.appendChild(ov);
+    document.getElementById('alloc-cfg-cancel').addEventListener('click', function() {
+        ov.remove();
+    });
+    ov.addEventListener('click', function(e) {
+        if (e.target === ov) ov.remove();
+    });
+    document.getElementById('alloc-cfg-save').addEventListener('click', function() {
+        var c   = parseInt(document.getElementById('alloc-cfg-cases').value) || DEFAULTS.containerizeRateCase;
+        var t   = parseInt(document.getElementById('alloc-cfg-totes').value) || DEFAULTS.containerizeRateTote;
+        var upt = parseFloat(document.getElementById('alloc-cfg-upt').value)  || DEFAULTS.unitsPerTote;
+        var ds  = document.getElementById('alloc-cfg-ds').value.trim();
+        var de  = document.getElementById('alloc-cfg-de').value.trim();
+        var ns  = document.getElementById('alloc-cfg-ns').value.trim();
+        var ne  = document.getElementById('alloc-cfg-ne').value.trim();
+        saveConfig({
+            containerizeRateCase: c,
+            containerizeRateTote: t,
+            unitsPerTote:         upt,
+            dayShiftStart:        ds,
+            dayShiftEnd:          de,
+            nightShiftStart:      ns,
+            nightShiftEnd:        ne
+        });
+        ov.remove();
+        listLoaded = false;
+        run();
+    });
 }
 
-// ─── CALCULATION FUNCTIONS ────────────────────────────────────────────────────
+// --- CALCULATION FUNCTIONS -----------------------------------------------
 
 function calcDetail() {
-var arcName = getArcName();
-if (isExcludedArc(arcName)) return null;
-var avg = getAvg(arcName);
-var wip = scrapeFuture();
-var alloc = scrapeAlloc();
-console.log('[AllocRec] Detail | arc: ' + arcName + ' | type: ' + getArcType(arcName) + ' | rate: ' + avg + ' JPH | wip: ' + JSON.stringify(wip) + ' | alloc: ' + alloc);
-if (!wip || alloc === null) return null;
-var minA = 0;
-for (var i = 0; i < 4; i++) {
-if (wip[i] > 0) { minA = 1; break; }
-}
-var intervals = ['15 MIN', '30 MIN', '1 HR', '2 HR', '4 HR', '8 HR', '24 HR'];
-var hm = [0.25, 0.5, 1, 2, 4, 8, 24];
-var per = [];
-for (var i = 0; i < wip.length; i++) {
-var n = 0;
-var w = (getArcType(arcName) === 'TOTE') ? wip[i] / getConfig().unitsPerTote : wip[i];
-if (w > 0) n = Math.round(w / hm[i] / avg);
-n = Math.max(n, minA);
-per.push({interval: intervals[i], needed: n, delta: n - alloc});
-}
-var oneHr = per[2].needed;
-var twoHr = per[3].needed;
-var fourHr = per[4].needed;
-var pn = Math.max(Math.round((oneHr + twoHr + fourHr) / 3), minA);
-return {
-currentAlloc: alloc,
-containerizeRate: avg,
-arcType: getArcType(arcName),
-perInterval: per,
-primaryDelta: pn - alloc,
-primaryNeeded: pn,
-minAlloc: minA
-};
+    var arcName = getArcName();
+    if (isExcludedArc(arcName)) return null;
+    var avg  = getAvg(arcName);
+    var wip  = scrapeFuture();
+    var alloc = scrapeAlloc();
+    console.log('[AllocRec] Detail | arc: ' + arcName + ' | type: ' + getArcType(arcName) + ' | rate: ' + avg + ' JPH | wip: ' + JSON.stringify(wip) + ' | alloc: ' + alloc);
+    if (!wip || alloc === null) return null;
+    var minA = 0;
+    for (var i = 0; i < 4; i++) {
+        if (wip[i] > 0) { minA = 1; break; }
+    }
+    var intervals = ['15 MIN', '30 MIN', '1 HR', '2 HR', '4 HR', '8 HR', '24 HR'];
+    var hm        = [0.25, 0.5, 1, 2, 4, 8, 24];
+    var per       = [];
+    var upt       = getConfig().unitsPerTote;
+    for (var i = 0; i < wip.length; i++) {
+        var n = 0;
+        var w = (getArcType(arcName) === 'TOTE') ? wip[i] / upt : wip[i];
+        if (w > 0) n = Math.round(w / hm[i] / avg);
+        n = Math.max(n, minA);
+        per.push({interval: intervals[i], needed: n, delta: n - alloc});
+    }
+    var oneHr  = per[2].needed;
+    var twoHr  = per[3].needed;
+    var fourHr = per[4].needed;
+    var pn = Math.max(Math.round((oneHr + twoHr + fourHr) / 3), minA);
+    return {
+        currentAlloc:     alloc,
+        containerizeRate: avg,
+        arcType:          getArcType(arcName),
+        perInterval:      per,
+        primaryDelta:     pn - alloc,
+        primaryNeeded:    pn,
+        minAlloc:         minA
+    };
 }
 
 function calcDetailFromGQL(arcName, projected, workcells) {
-if (isExcludedArc(arcName)) return null;
-var avg = getAvg(arcName);
-var intervalKeys = ['MIN_15', 'MIN_30', 'HR_1', 'HR_2', 'HR_4', 'HR_8', 'HR_24'];
-var wip = [];
-for (var k = 0; k < intervalKeys.length; k++) {
-var found = 0;
-for (var j = 0; j < projected.length; j++) {
-if (projected[j].interval === intervalKeys[k]) {
-found = projected[j].rate || 0;
-break;
-}
-}
-wip.push(found);
-}
-var alloc = 0;
-for (var i = 0; i < workcells.length; i++) {
-var wcName = (workcells[i].id && workcells[i].id.name) ? workcells[i].id.name : '';
-if (!containsPID(wcName)) alloc++;
-}
-console.log('[AllocRec] GQL | arc: ' + arcName + ' | rate: ' + avg + ' JPH | wip: ' + JSON.stringify(wip) + ' | alloc: ' + alloc);
-var minA = 0;
-for (var i = 0; i < 4; i++) {
-if (wip[i] > 0) { minA = 1; break; }
-}
-var intervals = ['15 MIN', '30 MIN', '1 HR', '2 HR', '4 HR', '8 HR', '24 HR'];
-var hm = [0.25, 0.5, 1, 2, 4, 8, 24];
-var per = [];
-for (var i = 0; i < wip.length; i++) {
-var n = 0;
-var w = (getArcType(arcName) === 'TOTE') ? wip[i] / getConfig().unitsPerTote : wip[i];
-if (w > 0) n = Math.round(w / hm[i] / avg);
-n = Math.max(n, minA);
-per.push({interval: intervals[i], needed: n, delta: n - alloc});
-}
-var oneHr = per[2].needed;
-var twoHr = per[3].needed;
-var fourHr = per[4].needed;
-var pn = Math.max(Math.round((oneHr + twoHr + fourHr) / 3), minA);
-return {
-currentAlloc: alloc,
-containerizeRate: avg,
-arcType: getArcType(arcName),
-perInterval: per,
-primaryDelta: pn - alloc,
-primaryNeeded: pn,
-minAlloc: minA
-};
+    if (isExcludedArc(arcName)) return null;
+    var avg          = getAvg(arcName);
+    var intervalKeys = ['MIN_15', 'MIN_30', 'HR_1', 'HR_2', 'HR_4', 'HR_8', 'HR_24'];
+    var wip          = [];
+    for (var k = 0; k < intervalKeys.length; k++) {
+        var found = 0;
+        for (var j = 0; j < projected.length; j++) {
+            if (projected[j].interval === intervalKeys[k]) {
+                found = projected[j].rate || 0;
+                break;
+            }
+        }
+        wip.push(found);
+    }
+    var alloc = 0;
+    for (var i = 0; i < workcells.length; i++) {
+        var wcName = (workcells[i].id && workcells[i].id.name) ? workcells[i].id.name : '';
+        if (!containsPID(wcName)) alloc++;
+    }
+    console.log('[AllocRec] GQL | arc: ' + arcName + ' | rate: ' + avg + ' JPH | wip: ' + JSON.stringify(wip) + ' | alloc: ' + alloc);
+    var minA = 0;
+    for (var i = 0; i < 4; i++) {
+        if (wip[i] > 0) { minA = 1; break; }
+    }
+    var intervals = ['15 MIN', '30 MIN', '1 HR', '2 HR', '4 HR', '8 HR', '24 HR'];
+    var hm        = [0.25, 0.5, 1, 2, 4, 8, 24];
+    var per       = [];
+    var upt       = getConfig().unitsPerTote;
+    for (var i = 0; i < wip.length; i++) {
+        var n = 0;
+        var w = (getArcType(arcName) === 'TOTE') ? wip[i] / upt : wip[i];
+        if (w > 0) n = Math.round(w / hm[i] / avg);
+        n = Math.max(n, minA);
+        per.push({interval: intervals[i], needed: n, delta: n - alloc});
+    }
+    var oneHr  = per[2].needed;
+    var twoHr  = per[3].needed;
+    var fourHr = per[4].needed;
+    var pn = Math.max(Math.round((oneHr + twoHr + fourHr) / 3), minA);
+    return {
+        currentAlloc:     alloc,
+        containerizeRate: avg,
+        arcType:          getArcType(arcName),
+        perInterval:      per,
+        primaryDelta:     pn - alloc,
+        primaryNeeded:    pn,
+        minAlloc:         minA
+    };
 }
 
 function fetchArcData(siteName, arcName) {
-var token = localStorage.getItem('dockflow.localStorageIdToken');
-var body = JSON.stringify({
-operationName: 'getOutboundArc',
-query: GQL_QUERY,
-variables: {siteName: siteName, outboundArcName: arcName}
-});
-return fetch(GRAPHQL_ENDPOINT, {
-method: 'POST',
-headers: {
-'Content-Type': 'application/json',
-'Authorization': 'Bearer ' + token
-},
-body: body
-}).then(function(resp) {
-if (!resp.ok) throw new Error('HTTP ' + resp.status);
-return resp.json();
-}).then(function(json) {
-var arc = json && json.data && json.data.outboundArc;
-if (!arc) return null;
-var projected = (arc.workState && arc.workState.rate && arc.workState.rate.projected) || [];
-var workcells = arc.workcells || [];
-var aggregateRate = (arc.workState && arc.workState.rate) ? (arc.workState.rate.aggregateRate || 0) : 0;
-return {projected: projected, workcells: workcells, aggregateRate: aggregateRate};
-}).catch(function(e) {
-console.warn('[AllocRec] fetchArcData error for ' + arcName + ': ' + e);
-return null;
-});
+    var token = localStorage.getItem('dockflow.localStorageIdToken');
+    var body  = JSON.stringify({
+        operationName: 'getOutboundArc',
+        query:         GQL_QUERY,
+        variables:     {siteName: siteName, outboundArcName: arcName}
+    });
+    return fetch(GRAPHQL_ENDPOINT, {
+        method:  'POST',
+        headers: {
+            'Content-Type':  'application/json',
+            'Authorization': 'Bearer ' + token
+        },
+        body: body
+    }).then(function(resp) {
+        if (!resp.ok) throw new Error('HTTP ' + resp.status);
+        return resp.json();
+    }).then(function(json) {
+        var arc = json && json.data && json.data.outboundArc;
+        if (!arc) return null;
+        var projected     = (arc.workState && arc.workState.rate && arc.workState.rate.projected)     || [];
+        var workcells     = arc.workcells || [];
+        var aggregateRate = (arc.workState && arc.workState.rate) ? (arc.workState.rate.aggregateRate || 0) : 0;
+        return {projected: projected, workcells: workcells, aggregateRate: aggregateRate};
+    }).catch(function(e) {
+        console.warn('[AllocRec] fetchArcData error for ' + arcName + ': ' + e);
+        return null;
+    });
 }
 
-// ─── v3.4.0 STABILITY ENGINE ──────────────────────────────────────────────────
+// --- v3.4.0 STABILITY ENGINE ---------------------------------------------
 //
 // Every 20 minutes: one check. Rules applied in order:
-// 1. Inside dark window: skip, hold badge.
-// 2. First check after dark window ends: preliminary only, cannot decrease.
+// 1. Inside auto-freeze (45 min before active shift end): skip, hold badge.
+// 2. First check after auto-freeze ends: preliminary, cannot decrease from held badge.
 // 3. aggregateRate dropped 60%+ from last good rate: break detected, hold badge.
 // 4. Recommendation higher than current badge: increase by +1 only.
 // 5. Recommendation equal: no change.
 // 6. Recommendation lower, two consecutive checks confirm: deploy decrease.
 
-var CHECK_INTERVAL_MS = 1200000;  // 20 minutes between checks
+var CHECK_INTERVAL_MS = 1200000;   // 20 minutes between checks
 
-var detailCheckTimer = null;
-var detailDarkTimer = null;
-var detailPendingDecrease = null;   // value pending confirmation
-var detailCurrentBadge = null;      // currently displayed primaryNeeded value
-var detailLastGoodRate = null;      // last aggregateRate from a non-dark, non-break check
-var detailIsPostDark = false;       // true for the first check after a dark window
+var detailCheckTimer      = null;
+var detailFreezeTimer     = null;
+var detailPendingDecrease = null;  // value pending two-check confirmation
+var detailCurrentBadge    = null;  // currently displayed primaryNeeded value
+var detailLastGoodRate    = null;  // last aggregateRate from a valid (non-break) check
+var detailIsPostFreeze    = false; // true for the one check immediately after auto-freeze
 
 function clearAllDetailTimers() {
-if (detailCheckTimer) { clearTimeout(detailCheckTimer); detailCheckTimer = null; }
-if (detailDarkTimer)  { clearTimeout(detailDarkTimer);  detailDarkTimer  = null; }
+    if (detailCheckTimer)  { clearTimeout(detailCheckTimer);  detailCheckTimer  = null; }
+    if (detailFreezeTimer) { clearTimeout(detailFreezeTimer); detailFreezeTimer = null; }
 }
 
 // Render the badge and update the interval forecast row.
 function renderDetailBadge(rec) {
-var badge = document.getElementById('alloc-rec-badge');
-if (!badge) {
-badge = document.createElement('span');
-badge.id = 'alloc-rec-badge';
-var hdr = findAssignH2();
-if (hdr) {
-hdr.appendChild(badge);
-} else {
-console.warn('[AllocRec] No Arc Assignments heading found');
-return;
-}
-}
-if (!document.getElementById('alloc-rec-settings-btn') && badge.parentElement) {
-var sb = document.createElement('button');
-sb.id = 'alloc-rec-settings-btn';
-sb.textContent = '\u2699\uFE0F';
-sb.title = 'Settings';
-sb.addEventListener('click', function(e) {
-e.stopPropagation();
-showSettings();
-});
-badge.parentElement.appendChild(sb);
-}
-if (!rec) {
-badge.className = 'no-change';
-badge.textContent = '\u2753 Unable to calculate';
-return;
-}
-var d = rec.primaryDelta;
-if (d > 0) {
-badge.className = 'increase';
-badge.innerHTML = '\u25B2 +' + d + ' allocation' + (d > 1 ? 's' : '') + ' recommended (need ~' + rec.primaryNeeded + ')';
-} else if (d < 0) {
-badge.className = 'decrease';
-badge.innerHTML = '\u25BC ' + d + ' allocation' + (Math.abs(d) > 1 ? 's' : '') + ' recommended (need ~' + rec.primaryNeeded + ')';
-} else {
-badge.className = 'no-change';
-badge.innerHTML = '\u2714 Allocations on target (' + rec.currentAlloc + ')';
-}
-var label = document.getElementById('alloc-rec-forecast-label');
-var row = document.getElementById('alloc-rec-forecast-row');
-if (!rec.perInterval) {
-if (row) row.remove();
-if (label) label.remove();
-return;
-}
-var box = findFutureBox();
-if (!box) return;
-if (!label) {
-label = document.createElement('div');
-label.id = 'alloc-rec-forecast-label';
-box.appendChild(label);
-}
-label.textContent = 'Needed Allocations (' + rec.containerizeRate + ' JPH ' + rec.arcType + ')';
-if (!row) {
-row = document.createElement('div');
-row.id = 'alloc-rec-forecast-row';
-box.appendChild(row);
-}
-var html = '';
-for (var i = 0; i < rec.perInterval.length; i++) {
-var p = rec.perInterval[i];
-html += '<div class="alloc-cell">' + p.needed + '</div>';
-}
-row.innerHTML = html;
+    var badge = document.getElementById('alloc-rec-badge');
+    if (!badge) {
+        badge    = document.createElement('span');
+        badge.id = 'alloc-rec-badge';
+        var hdr  = findAssignH2();
+        if (hdr) {
+            hdr.appendChild(badge);
+        } else {
+            console.warn('[AllocRec] No Arc Assignments heading found');
+            return;
+        }
+    }
+    if (!document.getElementById('alloc-rec-settings-btn') && badge.parentElement) {
+        var sb    = document.createElement('button');
+        sb.id     = 'alloc-rec-settings-btn';
+        sb.textContent = '\u2699\uFE0F';
+        sb.title  = 'Settings';
+        sb.addEventListener('click', function(e) {
+            e.stopPropagation();
+            showSettings();
+        });
+        badge.parentElement.appendChild(sb);
+    }
+    if (!rec) {
+        badge.className = 'no-change';
+        badge.textContent = '\u2753 Unable to calculate';
+        return;
+    }
+    var d = rec.primaryDelta;
+    if (d > 0) {
+        badge.className = 'increase';
+        badge.innerHTML = '\u25B2 +' + d + ' allocation' + (d > 1 ? 's' : '') + ' recommended (need ~' + rec.primaryNeeded + ')';
+    } else if (d < 0) {
+        badge.className = 'decrease';
+        badge.innerHTML = '\u25BC ' + d + ' allocation' + (Math.abs(d) > 1 ? 's' : '') + ' recommended (need ~' + rec.primaryNeeded + ')';
+    } else {
+        badge.className = 'no-change';
+        badge.innerHTML = '\u2714 Allocations on target (' + rec.currentAlloc + ')';
+    }
+    var label = document.getElementById('alloc-rec-forecast-label');
+    var row   = document.getElementById('alloc-rec-forecast-row');
+    if (!rec.perInterval) {
+        if (row)   row.remove();
+        if (label) label.remove();
+        return;
+    }
+    var box = findFutureBox();
+    if (!box) return;
+    if (!label) {
+        label    = document.createElement('div');
+        label.id = 'alloc-rec-forecast-label';
+        box.appendChild(label);
+    }
+    label.textContent = 'Needed Allocations (' + rec.containerizeRate + ' JPH ' + rec.arcType + ')';
+    if (!row) {
+        row    = document.createElement('div');
+        row.id = 'alloc-rec-forecast-row';
+        box.appendChild(row);
+    }
+    var html = '';
+    for (var i = 0; i < rec.perInterval.length; i++) {
+        var p = rec.perInterval[i];
+        html += '<div class="alloc-cell">' + p.needed + '</div>';
+    }
+    row.innerHTML = html;
 }
 
-// Apply the 20-minute check result with all stability rules.
+// Apply a 20-minute check result using all stability rules.
 function applyDetailCheck(rec, aggregateRate) {
-if (!rec) {
-console.log('[AllocRec] Check: no rec data, holding badge');
-return;
+    if (!rec) {
+        console.log('[AllocRec] Check: no rec data, holding badge');
+        return;
+    }
+    var newNeeded = rec.primaryNeeded;
+    var alloc     = rec.currentAlloc;
+
+    // Rule 3: aggregateRate break detection (60% drop from last good rate).
+    if (!detailIsPostFreeze && detailLastGoodRate !== null && aggregateRate > 0) {
+        var rateDrop = (detailLastGoodRate - aggregateRate) / detailLastGoodRate;
+        if (rateDrop >= 0.6) {
+            console.log('[AllocRec] Check: break detected (aggregateRate dropped ' + Math.round(rateDrop * 100) + '%), holding badge');
+            return;
+        }
+    }
+    // Update last good rate now that we have passed the break filter.
+    if (aggregateRate > 0) detailLastGoodRate = aggregateRate;
+
+    // Rule 2: first check after auto-freeze -- preliminary, no decrease.
+    if (detailIsPostFreeze) {
+        detailIsPostFreeze = false;
+        if (detailCurrentBadge !== null && newNeeded < detailCurrentBadge) {
+            console.log('[AllocRec] Check: post-freeze preliminary, holding badge (needed=' + newNeeded + ' < current=' + detailCurrentBadge + ')');
+            return;
+        }
+        detailCurrentBadge    = newNeeded;
+        detailPendingDecrease = null;
+        renderDetailBadge(rec);
+        console.log('[AllocRec] Check: post-freeze preliminary deployed | needed=' + newNeeded);
+        return;
+    }
+
+    // Very first check ever: deploy directly.
+    if (detailCurrentBadge === null) {
+        detailCurrentBadge    = newNeeded;
+        detailPendingDecrease = null;
+        renderDetailBadge(rec);
+        console.log('[AllocRec] Check: first deployment | needed=' + newNeeded);
+        return;
+    }
+
+    // Rule 4: increase capped at +1 per check.
+    if (newNeeded > detailCurrentBadge) {
+        var cappedNeeded = detailCurrentBadge + 1;
+        var cappedDelta  = cappedNeeded - alloc;
+        var cappedRec    = Object.assign({}, rec, {primaryNeeded: cappedNeeded, primaryDelta: cappedDelta});
+        detailCurrentBadge    = cappedNeeded;
+        detailPendingDecrease = null;
+        renderDetailBadge(cappedRec);
+        console.log('[AllocRec] Check: increase (+1 cap) | needed=' + newNeeded + ' -> deployed=' + cappedNeeded);
+        return;
+    }
+
+    // Rule 5: no change.
+    if (newNeeded === detailCurrentBadge) {
+        detailPendingDecrease = null;
+        console.log('[AllocRec] Check: no change | needed=' + newNeeded);
+        return;
+    }
+
+    // Rule 6: decrease requires two consecutive checks confirming same lower value.
+    if (newNeeded < detailCurrentBadge) {
+        if (detailPendingDecrease !== null && detailPendingDecrease === newNeeded) {
+            detailCurrentBadge    = newNeeded;
+            detailPendingDecrease = null;
+            renderDetailBadge(rec);
+            console.log('[AllocRec] Check: decrease confirmed | needed=' + newNeeded);
+        } else {
+            detailPendingDecrease = newNeeded;
+            console.log('[AllocRec] Check: decrease pending confirmation | needed=' + newNeeded);
+        }
+    }
 }
 
-var newNeeded = rec.primaryNeeded;
-var alloc = rec.currentAlloc;
-
-// Rule 3: aggregateRate break detection (60% drop from last good rate).
-// Skip if we have no baseline yet or this is a post-dark preliminary check.
-if (!detailIsPostDark && detailLastGoodRate !== null && aggregateRate > 0) {
-var rateDrop = (detailLastGoodRate - aggregateRate) / detailLastGoodRate;
-if (rateDrop >= 0.6) {
-console.log('[AllocRec] Check: break detected (aggregateRate dropped ' + Math.round(rateDrop * 100) + '%), holding badge');
-return;
-}
-}
-
-// Update last good rate now that we've passed the break filter.
-if (aggregateRate > 0) detailLastGoodRate = aggregateRate;
-
-// First check after dark window: treat as preliminary, no decrease allowed.
-if (detailIsPostDark) {
-detailIsPostDark = false;
-if (detailCurrentBadge !== null && newNeeded < detailCurrentBadge) {
-// Cannot decrease on post-dark check; hold current badge.
-console.log('[AllocRec] Check: post-dark preliminary, holding badge (needed=' + newNeeded + ' < current=' + detailCurrentBadge + ')');
-return;
-}
-// Equal or higher is fine for post-dark.
-detailCurrentBadge = newNeeded;
-detailPendingDecrease = null;
-renderDetailBadge(rec);
-console.log('[AllocRec] Check: post-dark preliminary deployed | needed=' + newNeeded);
-return;
+// Called when auto-freeze is detected.
+function pauseForAutoFreeze() {
+    clearAllDetailTimers();
+    var wait = msUntilFreezeEnd();
+    console.log('[AllocRec] Auto-freeze active \u2014 pausing ' + Math.round(wait / 60000) + ' min until shift end');
+    detailFreezeTimer = setTimeout(function() {
+        detailFreezeTimer     = null;
+        detailIsPostFreeze    = true;
+        detailPendingDecrease = null;
+        console.log('[AllocRec] Auto-freeze ended \u2014 scheduling post-freeze check');
+        scheduleNextCheck(0);
+    }, wait);
 }
 
-if (detailCurrentBadge === null) {
-// Very first check ever: deploy directly.
-detailCurrentBadge = newNeeded;
-detailPendingDecrease = null;
-renderDetailBadge(rec);
-console.log('[AllocRec] Check: first deployment | needed=' + newNeeded);
-return;
-}
-
-// Rule 4: increase capped at +1.
-if (newNeeded > detailCurrentBadge) {
-var cappedNeeded = detailCurrentBadge + 1;
-var cappedDelta = cappedNeeded - alloc;
-var cappedRec = Object.assign({}, rec, {primaryNeeded: cappedNeeded, primaryDelta: cappedDelta});
-detailCurrentBadge = cappedNeeded;
-detailPendingDecrease = null;
-renderDetailBadge(cappedRec);
-console.log('[AllocRec] Check: increase (+1 cap) | needed=' + newNeeded + ' -> deployed=' + cappedNeeded);
-return;
-}
-
-// Rule 5: no change.
-if (newNeeded === detailCurrentBadge) {
-detailPendingDecrease = null;
-console.log('[AllocRec] Check: no change | needed=' + newNeeded);
-return;
-}
-
-// Rule 6: decrease requires two consecutive checks.
-if (newNeeded < detailCurrentBadge) {
-if (detailPendingDecrease !== null && detailPendingDecrease === newNeeded) {
-// Second consecutive check confirms the decrease.
-detailCurrentBadge = newNeeded;
-detailPendingDecrease = null;
-renderDetailBadge(rec);
-console.log('[AllocRec] Check: decrease confirmed | needed=' + newNeeded);
-} else {
-detailPendingDecrease = newNeeded;
-console.log('[AllocRec] Check: decrease pending confirmation | needed=' + newNeeded);
-}
-}
-}
-
-// Called when a dark window is detected mid-cycle.
-function pauseForDarkWindow() {
-clearAllDetailTimers();
-var wait = msUntilDarkWindowEnd();
-console.log('[AllocRec] Dark window active \u2014 pausing ' + Math.round(wait / 60000) + ' min');
-detailDarkTimer = setTimeout(function() {
-detailDarkTimer = null;
-detailIsPostDark = true;
-detailPendingDecrease = null;
-console.log('[AllocRec] Dark window ended \u2014 scheduling post-dark check');
-scheduleNextCheck(0);
-}, wait);
-}
-
-// Schedule the next 20-minute check (or an immediate one if delayMs=0).
+// Schedule the next 20-minute check (delayMs=0 for immediate).
 function scheduleNextCheck(delayMs) {
-if (detailCheckTimer) { clearTimeout(detailCheckTimer); detailCheckTimer = null; }
-detailCheckTimer = setTimeout(function() {
-detailCheckTimer = null;
-runDetailCheck();
-}, delayMs !== undefined ? delayMs : CHECK_INTERVAL_MS);
+    if (detailCheckTimer) { clearTimeout(detailCheckTimer); detailCheckTimer = null; }
+    detailCheckTimer = setTimeout(function() {
+        detailCheckTimer = null;
+        runDetailCheck();
+    }, delayMs !== undefined ? delayMs : CHECK_INTERVAL_MS);
 }
 
-// Run one check: dark-window guard, calculate, apply rules, schedule next.
+// Run one check: auto-freeze guard, calculate, apply rules, schedule next.
 function runDetailCheck() {
-if (isInDarkWindow()) {
-pauseForDarkWindow();
-return;
-}
-var rec = calcDetail();
-// aggregateRate is not available from DOM scrape; pass null so rule 3 is skipped
-// on DOM-only checks (detail page initial load). Rule 3 fires only from GQL checks.
-applyDetailCheck(rec, null);
-scheduleNextCheck();
+    if (isInAutoFreeze()) {
+        pauseForAutoFreeze();
+        return;
+    }
+    var rec = calcDetail();
+    // aggregateRate is unavailable from DOM scrape; pass null so rule 3 is skipped
+    // on DOM-only checks. Rule 3 fires on GQL checks only (list view).
+    applyDetailCheck(rec, null);
+    scheduleNextCheck();
 }
 
 // renderDetail: called on first page load for the detail view.
 // Shows a preliminary badge immediately, then starts the 20-minute check cycle.
 function renderDetail() {
-if (detailCheckTimer || detailDarkTimer) return;
-if (isInDarkWindow()) {
-// During dark window: show a live preliminary number so operators can plan.
-var rec = calcDetail();
-if (rec) {
-// Show it but don't lock it in as the stable badge value.
-renderDetailBadge(rec);
-}
-var wait = msUntilDarkWindowEnd();
-console.log('[AllocRec] Dark window on load \u2014 showing preliminary, real cycle in ' + Math.round(wait / 60000) + ' min');
-detailDarkTimer = setTimeout(function() {
-detailDarkTimer = null;
-detailIsPostDark = true;
-detailPendingDecrease = null;
-scheduleNextCheck(0);
-}, wait);
-return;
-}
-// Not in dark window: run first check immediately, then schedule 20-min cycle.
-runDetailCheck();
+    if (detailCheckTimer || detailFreezeTimer) return;
+    if (isInAutoFreeze()) {
+        // During auto-freeze: show a live preliminary number so operators can plan.
+        var rec = calcDetail();
+        if (rec) renderDetailBadge(rec);
+        var wait = msUntilFreezeEnd();
+        console.log('[AllocRec] Auto-freeze on load \u2014 showing preliminary, real cycle in ' + Math.round(wait / 60000) + ' min');
+        detailFreezeTimer = setTimeout(function() {
+            detailFreezeTimer     = null;
+            detailIsPostFreeze    = true;
+            detailPendingDecrease = null;
+            scheduleNextCheck(0);
+        }, wait);
+        return;
+    }
+    // Not in auto-freeze: run first check immediately, then schedule 20-min cycle.
+    runDetailCheck();
 }
 
-// ─── LIST VIEW ────────────────────────────────────────────────────────────────
+// --- LIST VIEW -----------------------------------------------------------
 
 function renderList() {
-if (listLoaded) return;
-var rows = document.querySelectorAll('tr');
-var count = 0;
-console.log('[AllocRec] List | TRs: ' + rows.length);
-var arcRows = [];
-for (var r = 0; r < rows.length; r++) {
-var cells = rows[r].querySelectorAll('td');
-if (cells.length < 5) continue;
-var name = cells[0].textContent.trim();
-if (!name || name.length < 3 || !/[A-Za-z]/.test(name)) continue;
-if ((/^arc\s*name$/i).test(name)) continue;
-if (isExcludedArc(name)) continue;
-arcRows.push({row: rows[r], name: name, aCell: cells[4]});
-}
-console.log('[AllocRec] List | arc rows found: ' + arcRows.length);
-if (arcRows.length === 0) {
-if (!document.getElementById('alloc-rec-list-settings-btn')) {
-var ah = findH2('arcs');
-if (ah) {
-var gb = document.createElement('button');
-gb.id = 'alloc-rec-list-settings-btn';
-gb.textContent = '\u2699\uFE0F';
-gb.title = 'Settings';
-gb.style.cssText = 'cursor:pointer;background:none;border:none;font-size:16px;margin-left:6px;vertical-align:middle;opacity:0.7;';
-gb.addEventListener('click', function(e) {
-e.stopPropagation();
-showSettings();
-});
-ah.appendChild(gb);
-}
-}
-return;
-}
-listLoaded = true;
-for (var i = 0; i < arcRows.length; i++) {
-var oldBadge = arcRows[i].row.querySelector('.alloc-rec-list-badge');
-if (oldBadge) oldBadge.remove();
-var lb = document.createElement('span');
-lb.className = 'alloc-rec-list-badge same';
-lb.textContent = '\u23F3';
-lb.title = 'Loading...';
-arcRows[i].aCell.appendChild(lb);
-arcRows[i].loadBadge = lb;
-}
-var siteName = getSiteName();
-var pending = 0;
-var MAX_CONCURRENT = 3;
-var idx = 0;
-function processNext() {
-while (pending < MAX_CONCURRENT && idx < arcRows.length) {
-(function(arcRow) {
-pending++;
-fetchArcData(siteName, arcRow.name).then(function(data) {
-pending--;
-var lb = arcRow.loadBadge;
-if (lb) lb.remove();
-var b = document.createElement('span');
-b.className = 'alloc-rec-list-badge';
-if (!data) {
-b.className += ' same';
-b.textContent = '\u2753';
-b.title = 'API error for ' + arcRow.name;
-} else {
-var rec = calcDetailFromGQL(arcRow.name, data.projected, data.workcells);
-if (!rec) {
-b.className += ' same';
-b.textContent = '\u2753';
-b.title = 'Unable to calculate';
-} else {
-var delta = rec.primaryDelta;
-if (delta > 0) {
-b.className += ' up';
-b.textContent = '\u25B2 +' + delta;
-b.title = 'Need ~' + rec.primaryNeeded + ', currently ' + rec.currentAlloc;
-} else if (delta < 0) {
-b.className += ' down';
-b.textContent = '\u25BC ' + delta;
-b.title = 'Need ~' + rec.primaryNeeded + ', currently ' + rec.currentAlloc;
-} else {
-b.className += ' same';
-b.textContent = '\u2714';
-b.title = 'On target (' + rec.currentAlloc + ')';
-}
-console.log('[AllocRec] Row: ' + arcRow.name + ' | need: ' + rec.primaryNeeded + ' | alloc: ' + rec.currentAlloc + ' | delta: ' + delta);
-}
-}
-arcRow.aCell.appendChild(b);
-processNext();
-});
-})(arcRows[idx]);
-idx++;
-}
-}
-processNext();
-if (!document.getElementById('alloc-rec-list-settings-btn')) {
-var ah = findH2('arcs');
-if (ah) {
-var gb = document.createElement('button');
-gb.id = 'alloc-rec-list-settings-btn';
-gb.textContent = '\u2699\uFE0F';
-gb.title = 'Settings';
-gb.style.cssText = 'cursor:pointer;background:none;border:none;font-size:16px;margin-left:6px;vertical-align:middle;opacity:0.7;';
-gb.addEventListener('click', function(e) {
-e.stopPropagation();
-showSettings();
-});
-ah.appendChild(gb);
-}
-}
+    if (listLoaded) return;
+    var rows  = document.querySelectorAll('tr');
+    var count = 0;
+    console.log('[AllocRec] List | TRs: ' + rows.length);
+    var arcRows = [];
+    for (var r = 0; r < rows.length; r++) {
+        var cells = rows[r].querySelectorAll('td');
+        if (cells.length < 5) continue;
+        var name = cells[0].textContent.trim();
+        if (!name || name.length < 3 || !/[A-Za-z]/.test(name)) continue;
+        if ((/^arc\s*name$/i).test(name)) continue;
+        if (isExcludedArc(name)) continue;
+        arcRows.push({row: rows[r], name: name, aCell: cells[4]});
+    }
+    console.log('[AllocRec] List | arc rows found: ' + arcRows.length);
+    if (arcRows.length === 0) {
+        if (!document.getElementById('alloc-rec-list-settings-btn')) {
+            var ah = findH2('arcs');
+            if (ah) {
+                var gb          = document.createElement('button');
+                gb.id           = 'alloc-rec-list-settings-btn';
+                gb.textContent  = '\u2699\uFE0F';
+                gb.title        = 'Settings';
+                gb.style.cssText = 'cursor:pointer;background:none;border:none;font-size:16px;margin-left:6px;vertical-align:middle;opacity:0.7;';
+                gb.addEventListener('click', function(e) {
+                    e.stopPropagation();
+                    showSettings();
+                });
+                ah.appendChild(gb);
+            }
+        }
+        return;
+    }
+    listLoaded = true;
+    for (var i = 0; i < arcRows.length; i++) {
+        var oldBadge = arcRows[i].row.querySelector('.alloc-rec-list-badge');
+        if (oldBadge) oldBadge.remove();
+        var lb          = document.createElement('span');
+        lb.className    = 'alloc-rec-list-badge same';
+        lb.textContent  = '\u23F3';
+        lb.title        = 'Loading...';
+        arcRows[i].aCell.appendChild(lb);
+        arcRows[i].loadBadge = lb;
+    }
+    var siteName       = getSiteName();
+    var pending        = 0;
+    var MAX_CONCURRENT = 3;
+    var idx            = 0;
+    function processNext() {
+        while (pending < MAX_CONCURRENT && idx < arcRows.length) {
+            (function(arcRow) {
+                pending++;
+                fetchArcData(siteName, arcRow.name).then(function(data) {
+                    pending--;
+                    var lb = arcRow.loadBadge;
+                    if (lb) lb.remove();
+                    var b           = document.createElement('span');
+                    b.className     = 'alloc-rec-list-badge';
+                    if (!data) {
+                        b.className += ' same';
+                        b.textContent = '\u2753';
+                        b.title = 'API error for ' + arcRow.name;
+                    } else {
+                        var rec = calcDetailFromGQL(arcRow.name, data.projected, data.workcells);
+                        if (!rec) {
+                            b.className += ' same';
+                            b.textContent = '\u2753';
+                            b.title = 'Unable to calculate';
+                        } else {
+                            var delta = rec.primaryDelta;
+                            if (delta > 0) {
+                                b.className += ' up';
+                                b.textContent = '\u25B2 +' + delta;
+                                b.title = 'Need ~' + rec.primaryNeeded + ', currently ' + rec.currentAlloc;
+                            } else if (delta < 0) {
+                                b.className += ' down';
+                                b.textContent = '\u25BC ' + delta;
+                                b.title = 'Need ~' + rec.primaryNeeded + ', currently ' + rec.currentAlloc;
+                            } else {
+                                b.className += ' same';
+                                b.textContent = '\u2714';
+                                b.title = 'On target (' + rec.currentAlloc + ')';
+                            }
+                            console.log('[AllocRec] Row: ' + arcRow.name + ' | need: ' + rec.primaryNeeded + ' | alloc: ' + rec.currentAlloc + ' | delta: ' + delta);
+                        }
+                    }
+                    arcRow.aCell.appendChild(b);
+                    processNext();
+                });
+            })(arcRows[idx]);
+            idx++;
+        }
+    }
+    processNext();
+    if (!document.getElementById('alloc-rec-list-settings-btn')) {
+        var ah = findH2('arcs');
+        if (ah) {
+            var gb          = document.createElement('button');
+            gb.id           = 'alloc-rec-list-settings-btn';
+            gb.textContent  = '\u2699\uFE0F';
+            gb.title        = 'Settings';
+            gb.style.cssText = 'cursor:pointer;background:none;border:none;font-size:16px;margin-left:6px;vertical-align:middle;opacity:0.7;';
+            gb.addEventListener('click', function(e) {
+                e.stopPropagation();
+                showSettings();
+            });
+            ah.appendChild(gb);
+        }
+    }
 }
 
-// ─── CLEANUP / RUN / OBSERVER ─────────────────────────────────────────────────
+// --- CLEANUP / RUN / OBSERVER --------------------------------------------
 
 function cleanup() {
-var ids = ['alloc-rec-badge', 'alloc-rec-settings-btn', 'alloc-rec-forecast-label', 'alloc-rec-forecast-row', 'alloc-rec-list-settings-btn'];
-for (var i = 0; i < ids.length; i++) {
-var el = document.getElementById(ids[i]);
-if (el) el.remove();
-}
-var bb = document.querySelectorAll('.alloc-rec-list-badge');
-for (var i = 0; i < bb.length; i++) bb[i].remove();
-listLoaded = false;
-detailCurrentBadge = null;
-detailPendingDecrease = null;
-detailLastGoodRate = null;
-detailIsPostDark = false;
-clearAllDetailTimers();
+    var ids = ['alloc-rec-badge', 'alloc-rec-settings-btn', 'alloc-rec-forecast-label', 'alloc-rec-forecast-row', 'alloc-rec-list-settings-btn'];
+    for (var i = 0; i < ids.length; i++) {
+        var el = document.getElementById(ids[i]);
+        if (el) el.remove();
+    }
+    var bb = document.querySelectorAll('.alloc-rec-list-badge');
+    for (var i = 0; i < bb.length; i++) bb[i].remove();
+    listLoaded            = false;
+    detailCurrentBadge    = null;
+    detailPendingDecrease = null;
+    detailLastGoodRate    = null;
+    detailIsPostFreeze    = false;
+    clearAllDetailTimers();
 }
 
 function run() {
-console.log('[AllocRec] run | detail: ' + isDetail() + ' | list: ' + isList());
-if (isDetail()) {
-var arcName = getArcName();
-if (arcName && isExcludedArc(arcName)) {
-var existing = document.querySelector('.alloc-badge');
-if (existing) existing.remove();
-clearAllDetailTimers();
-return;
-}
-renderDetail();
-}
-if (isList()) renderList();
+    console.log('[AllocRec] run | detail: ' + isDetail() + ' | list: ' + isList());
+    if (isDetail()) {
+        var arcName = getArcName();
+        if (arcName && isExcludedArc(arcName)) {
+            var existing = document.querySelector('.alloc-badge');
+            if (existing) existing.remove();
+            clearAllDetailTimers();
+            return;
+        }
+        renderDetail();
+    }
+    if (isList()) renderList();
 }
 
 function startObs() {
-var obs = new MutationObserver(function() {
-clearTimeout(obs._db);
-obs._db = setTimeout(run, 1500);
-});
-obs.observe(document.body, {childList: true, subtree: true, characterData: true});
+    var obs = new MutationObserver(function() {
+        clearTimeout(obs._db);
+        obs._db = setTimeout(run, 1500);
+    });
+    obs.observe(document.body, {childList: true, subtree: true, characterData: true});
 }
 
 function init() {
-cleanup();
-console.log('[AllocRec] init | path: ' + path);
-var ck = setInterval(function() {
-if (isDetail()) {
-var h = findAssignH2();
-var w = scrapeFuture();
-if (h && w) {
-clearInterval(ck);
-console.log('[AllocRec] Detail ready');
-run();
-startObs();
-}
-} else if (isList()) {
-var tds = document.querySelectorAll('tr td');
-if (tds.length > 0) {
-clearInterval(ck);
-console.log('[AllocRec] List ready | TDs: ' + tds.length);
-run();
-startObs();
-}
-}
-}, 500);
-setTimeout(function() {
-clearInterval(ck);
-console.log('[AllocRec] Timeout');
-}, 30000);
+    cleanup();
+    console.log('[AllocRec] init | path: ' + path);
+    var ck = setInterval(function() {
+        if (isDetail()) {
+            var h = findAssignH2();
+            var w = scrapeFuture();
+            if (h && w) {
+                clearInterval(ck);
+                console.log('[AllocRec] Detail ready');
+                run();
+                startObs();
+            }
+        } else if (isList()) {
+            var tds = document.querySelectorAll('tr td');
+            if (tds.length > 0) {
+                clearInterval(ck);
+                console.log('[AllocRec] List ready | TDs: ' + tds.length);
+                run();
+                startObs();
+            }
+        }
+    }, 500);
+    setTimeout(function() {
+        clearInterval(ck);
+        console.log('[AllocRec] Timeout');
+    }, 30000);
 }
 
 var lastUrl = location.href;
 new MutationObserver(function() {
-if (location.href !== lastUrl) {
-lastUrl = location.href;
-path = window.location.pathname;
-console.log('[AllocRec] Nav: ' + path);
-setTimeout(init, 1000);
-}
+    if (location.href !== lastUrl) {
+        lastUrl = location.href;
+        path    = window.location.pathname;
+        console.log('[AllocRec] Nav: ' + path);
+        setTimeout(init, 1000);
+    }
 }).observe(document, {subtree: true, childList: true});
 
 init();
