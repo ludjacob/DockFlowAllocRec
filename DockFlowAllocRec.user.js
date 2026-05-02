@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         DockFlow Allocation Recommender
 // @namespace    http://tampermonkey.net/
-// @version      3.5.0
+// @version      3.6.0
 // @description  Recommends allocation changes on OBA detail and Arcs list pages
 // @author       Jake
 // @match        https://prod-na.dockflow.robotics.a2z.com/*
@@ -67,7 +67,7 @@ nightShiftEnd: '05:00'
 
 var listLoaded = false;
 
-var EXCLUDED_ARCS = ['KICKOUT', 'DZ-P'];
+var EXCLUDED_ARCS = ['WMS_KICKOUT','KICKOUT', 'DZ-P'];
 
 var SOS_RAMP_MINUTES = 30;
 
@@ -461,8 +461,39 @@ run();
 }
 
 // --- CALCULATION FUNCTIONS ------------------------------------------------
-// v3.5.0 weighted formula: round((1HR * 1 + 2HR * 3 + 4HR * 2) / 6)
-// Weights: 1HR ~17%, 2HR ~50%, 4HR ~33%
+// v3.5.0 consensus model: all three windows (1HR, 2HR, 4HR) must agree
+// on direction vs current allocation before recommending a change.
+// When consensus exists, the 2HR value sets the target.
+// When no consensus, hold at on-target.
+
+function consensusCalc(perInterval, alloc, minA) {
+var oneHr  = perInterval[2].needed;
+var twoHr  = perInterval[3].needed;
+var fourHr = perInterval[4].needed;
+
+var dir1 = oneHr > alloc ? 1 : (oneHr < alloc ? -1 : 0);
+var dir2 = twoHr > alloc ? 1 : (twoHr < alloc ? -1 : 0);
+var dir4 = fourHr > alloc ? 1 : (fourHr < alloc ? -1 : 0);
+
+var pn;
+if (dir1 > 0 && dir2 > 0 && dir4 > 0) {
+    pn = Math.max(twoHr, minA);
+} else if (dir1 < 0 && dir2 < 0 && dir4 < 0) {
+    pn = Math.max(twoHr, minA);
+} else {
+    pn = alloc;
+}
+
+var delta = clampDelta(pn - alloc);
+var consensus = (dir1 > 0 && dir2 > 0 && dir4 > 0) ? 'increase' :
+                (dir1 < 0 && dir2 < 0 && dir4 < 0) ? 'decrease' : 'none';
+
+console.log('[AllocRec] Consensus | 1HR=' + oneHr + ' 2HR=' + twoHr + ' 4HR=' + fourHr +
+    ' | dirs=' + dir1 + '/' + dir2 + '/' + dir4 +
+    ' | consensus=' + consensus + ' | target=' + pn + ' | delta=' + delta);
+
+return {primaryNeeded: pn, primaryDelta: delta, consensus: consensus};
+}
 
 function calcDetail() {
 var arcName = getArcName();
@@ -486,19 +517,16 @@ if (w > 0) n = Math.round(w / hm[i] / avg);
 n = Math.max(n, minA);
 per.push({interval: intervals[i], needed: n, delta: n - alloc});
 }
-var oneHr  = per[2].needed;
-var twoHr  = per[3].needed;
-var fourHr = per[4].needed;
-var pn = Math.max(Math.round((oneHr * 1 + twoHr * 3 + fourHr * 2) / 6), minA);
-var delta = clampDelta(pn - alloc);
+var result = consensusCalc(per, alloc, minA);
 return {
 currentAlloc:      alloc,
 containerizeRate:  avg,
 arcType:           getArcType(arcName),
 perInterval:       per,
-primaryDelta:      delta,
-primaryNeeded:     pn,
-minAlloc:          minA
+primaryDelta:      result.primaryDelta,
+primaryNeeded:     result.primaryNeeded,
+minAlloc:          minA,
+consensus:         result.consensus
 };
 }
 
@@ -537,19 +565,16 @@ if (w > 0) n = Math.round(w / hm[i] / avg);
 n = Math.max(n, minA);
 per.push({interval: intervals[i], needed: n, delta: n - alloc});
 }
-var oneHr  = per[2].needed;
-var twoHr  = per[3].needed;
-var fourHr = per[4].needed;
-var pn = Math.max(Math.round((oneHr * 1 + twoHr * 3 + fourHr * 2) / 6), minA);
-var delta = clampDelta(pn - alloc);
+var result = consensusCalc(per, alloc, minA);
 return {
 currentAlloc:      alloc,
 containerizeRate:  avg,
 arcType:           getArcType(arcName),
 perInterval:       per,
-primaryDelta:      delta,
-primaryNeeded:     pn,
-minAlloc:          minA
+primaryDelta:      result.primaryDelta,
+primaryNeeded:     result.primaryNeeded,
+minAlloc:          minA,
+consensus:         result.consensus
 };
 }
 
@@ -864,7 +889,7 @@ b.className += ' same';
 b.textContent = '\u2714';
 b.title = 'On target (' + rec.currentAlloc + ')';
 }
-console.log('[AllocRec] Row: ' + arcRow.name + ' | need: ' + rec.primaryNeeded + ' | alloc: ' + rec.currentAlloc + ' | delta: ' + delta);
+console.log('[AllocRec] Row: ' + arcRow.name + ' | need: ' + rec.primaryNeeded + ' | alloc: ' + rec.currentAlloc + ' | delta: ' + delta + ' | consensus: ' + rec.consensus);
 }
 }
 arcRow.aCell.appendChild(b);
