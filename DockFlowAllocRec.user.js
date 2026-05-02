@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         DockFlow Allocation Recommender
 // @namespace    http://tampermonkey.net/
-// @version      3.7.0
+// @version      3.8.0
 // @description  Recommends allocation changes on OBA detail and Arcs list pages
 // @author       Jake
 // @match        https://prod-na.dockflow.robotics.a2z.com/*
@@ -456,6 +456,8 @@ nightShiftEnd: ne
 });
 ov.remove();
 listLoaded = false;
+clearDetailTimer();
+clearListTimer();
 run();
 });
 }
@@ -470,9 +472,9 @@ run();
 var decreaseConfirmCounts = {};
 
 function consensusCalc(perInterval, alloc, minA, arcKey) {
-var oneHr  = perInterval.needed;
-var twoHr  = perInterval.needed;
-var fourHr = perInterval.needed;
+var oneHr = perInterval[2].needed;
+var twoHr = perInterval[3].needed;
+var fourHr = perInterval[4].needed;
 
 var dir1 = oneHr > alloc ? 1 : (oneHr < alloc ? -1 : 0);
 var dir2 = twoHr > alloc ? 1 : (twoHr < alloc ? -1 : 0);
@@ -482,13 +484,14 @@ var pn;
 var consensus;
 
 if (dir1 > 0 && dir2 > 0 && dir4 > 0) {
-    pn = Math.max(twoHr, minA);
+    pn = alloc + 1;
     consensus = 'increase';
     decreaseConfirmCounts[arcKey] = 0;
 } else if (dir1 < 0 && dir2 < 0 && dir4 < 0) {
     decreaseConfirmCounts[arcKey] = (decreaseConfirmCounts[arcKey] || 0) + 1;
     if (decreaseConfirmCounts[arcKey] >= 3) {
-        pn = Math.max(twoHr, minA);
+        pn = alloc - 1;
+        pn = Math.max(pn, minA);
         consensus = 'decrease';
     } else {
         pn = alloc;
@@ -532,7 +535,7 @@ if (w > 0) n = Math.round(w / hm[i] / avg);
 n = Math.max(n, minA);
 per.push({interval: intervals[i], needed: n, delta: n - alloc});
 }
-var result = consensusCalc(per, alloc, minA);
+var result = consensusCalc(per, alloc, minA, arcName);
 return {
 currentAlloc:      alloc,
 containerizeRate:  avg,
@@ -672,32 +675,6 @@ badge.innerHTML = '\u25BC ' + d + ' allocation' + (Math.abs(d) > 1 ? 's' : '') +
 badge.className = 'no-change';
 badge.innerHTML = '\u2714 Allocations on target (' + rec.currentAlloc + ')';
 }
-var label = document.getElementById('alloc-rec-forecast-label');
-var row   = document.getElementById('alloc-rec-forecast-row');
-if (!rec.perInterval) {
-if (row)   row.remove();
-if (label) label.remove();
-return;
-}
-var box = findFutureBox();
-if (!box) return;
-if (!label) {
-label = document.createElement('div');
-label.id = 'alloc-rec-forecast-label';
-box.appendChild(label);
-}
-label.textContent = 'Needed Allocations (' + rec.containerizeRate + ' JPH ' + rec.arcType + ')';
-if (!row) {
-row = document.createElement('div');
-row.id = 'alloc-rec-forecast-row';
-box.appendChild(row);
-}
-var html = '';
-for (var i = 0; i < rec.perInterval.length; i++) {
-var p = rec.perInterval[i];
-html += '<div class="alloc-cell">' + p.needed + '</div>';
-}
-row.innerHTML = html;
 }
 
 function renderDetailPaused() {
@@ -924,7 +901,7 @@ processNext();
 // --- CLEANUP / RUN / OBSERVER ---------------------------------------------
 
 function cleanup() {
-var ids = ['alloc-rec-badge', 'alloc-rec-settings-btn', 'alloc-rec-forecast-label', 'alloc-rec-forecast-row', 'alloc-rec-list-settings-btn'];
+var ids = ['alloc-rec-badge', 'alloc-rec-settings-btn', 'alloc-rec-list-settings-btn'];
 for (var i = 0; i < ids.length; i++) {
 var el = document.getElementById(ids[i]);
 if (el) el.remove();
