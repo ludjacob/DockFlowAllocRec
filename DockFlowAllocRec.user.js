@@ -18,7 +18,7 @@
 
 var path = window.location.pathname;
 if (path.indexOf('/oba') === -1 && !/\/wc(\?|$)/i.test(path)) return;
-console.log('[AllocRec] v3.9.1 loaded | path: ' + path);
+console.log('[AllocRec] v3.5.0 loaded | path: ' + path);
 
 var style = document.createElement('style');
 style.textContent = [
@@ -71,10 +71,15 @@ var EXCLUDED_ARCS = ['WMS_KICKOUT', 'KICKOUT', 'DZ-P'];
 
 var SOS_RAMP_MINUTES = 30;
 
-// --- STABILITY PERSISTENCE ------------------------------------------------
-// v3.9.1 KEY CHANGE: list view reads sessionStorage cache written by detail view.
-// This ensures both views always show the same recommendation for a given arc.
+function isExcludedArc(name) {
+var upper = name.toUpperCase();
+for (var i = 0; i < EXCLUDED_ARCS.length; i++) {
+if (upper.indexOf(EXCLUDED_ARCS[i]) !== -1) return true;
+}
+return false;
+}
 
+// --- STABILITY PERSISTENCE ------------------------------------------------
 var STABILITY_KEY = 'allocRec_stability_';
 var LIST_CACHE_KEY = 'allocRec_listCache';
 var LIST_CACHE_TIME_KEY = 'allocRec_listCacheTime';
@@ -90,27 +95,7 @@ return {delta: null, needed: null, alloc: null, lastCheckTime: 0, pendingDecreas
 function setStabilityState(arcKey, state) {
 sessionStorage.setItem(STABILITY_KEY + arcKey, JSON.stringify(state));
 }
-
-function getDecreaseCount(arcKey) {
-try {
-var raw = sessionStorage.getItem('allocRec_decCount_' + arcKey);
-return raw ? parseInt(raw, 10) : 0;
-} catch(e) { return 0; }
-}
-
-function setDecreaseCount(arcKey, count) {
-sessionStorage.setItem('allocRec_decCount_' + arcKey, String(count));
-}
-
 // --- END STABILITY PERSISTENCE --------------------------------------------
-
-function isExcludedArc(name) {
-var upper = name.toUpperCase();
-for (var i = 0; i < EXCLUDED_ARCS.length; i++) {
-if (upper.indexOf(EXCLUDED_ARCS[i]) !== -1) return true;
-}
-return false;
-}
 
 var GRAPHQL_ENDPOINT = 'https://rtyxxulvlvberovj325a3rxppq.appsync-api.us-east-1.amazonaws.com/graphql';
 
@@ -187,7 +172,7 @@ var cur = now.getHours() * 60 + now.getMinutes();
 var dayStart  = parseHHMM(cfg.dayShiftStart);
 var dayEnd    = parseHHMM(cfg.dayShiftEnd);
 var nightStart = parseHHMM(cfg.nightShiftStart);
-var nightEnd  = parseHHMM(cfg.nightShiftEnd);
+var nightEnd   = parseHHMM(cfg.nightShiftEnd);
 if (dayStart !== null && dayEnd !== null && cur >= dayStart && cur < dayEnd) {
 return dayEnd;
 }
@@ -479,13 +464,13 @@ var de  = document.getElementById('alloc-cfg-de').value.trim();
 var ns  = document.getElementById('alloc-cfg-ns').value.trim();
 var ne  = document.getElementById('alloc-cfg-ne').value.trim();
 saveConfig({
-containerizeRateCase: c,
-containerizeRateTote: t,
-unitsPerTote: upt,
-dayShiftStart: ds,
-dayShiftEnd: de,
-nightShiftStart: ns,
-nightShiftEnd: ne
+containerizeRateCase:  c,
+containerizeRateTote:  t,
+unitsPerTote:          upt,
+dayShiftStart:         ds,
+dayShiftEnd:           de,
+nightShiftStart:       ns,
+nightShiftEnd:         ne
 });
 ov.remove();
 listLoaded = false;
@@ -496,12 +481,22 @@ run();
 }
 
 // --- CALCULATION FUNCTIONS ------------------------------------------------
-// v3.9.1 consensus model: all three windows (1HR, 2HR, 4HR) must agree
+// v3.5.0 consensus model: all three windows (1HR, 2HR, 4HR) must agree
 // on direction vs current allocation before recommending a change.
-// When consensus exists, the recommendation increments/decrements by 1.
+// When consensus exists, the 2HR value sets the target.
+// When no consensus, hold at on-target.
 // Decreases require 3 consecutive unanimous checks before firing.
-// Results are written to sessionStorage so the list view can read them
-// directly instead of recalculating independently.
+
+function getDecreaseCount(arcKey) {
+try {
+var raw = sessionStorage.getItem('allocRec_decCount_' + arcKey);
+return raw ? parseInt(raw, 10) : 0;
+} catch(e) { return 0; }
+}
+
+function setDecreaseCount(arcKey, count) {
+sessionStorage.setItem('allocRec_decCount_' + arcKey, String(count));
+}
 
 function consensusCalc(perInterval, alloc, minA, arcKey) {
 var oneHr  = perInterval[2].needed;
@@ -538,11 +533,12 @@ setDecreaseCount(arcKey, 0);
 var delta = clampDelta(pn - alloc);
 
 console.log('[AllocRec] Consensus | ' + arcKey + ' | 1HR=' + oneHr + ' 2HR=' + twoHr + ' 4HR=' + fourHr +
-' | dirs=' + dir1 + '/' + dir2 + '/' + dir4 +
-' | consensus=' + consensus + ' | target=' + pn + ' | delta=' + delta);
+    ' | dirs=' + dir1 + '/' + dir2 + '/' + dir4 +
+    ' | consensus=' + consensus + ' | target=' + pn + ' | delta=' + delta);
 
 return {primaryNeeded: pn, primaryDelta: delta, consensus: consensus};
 }
+
 
 function calcDetail() {
 var arcName = getArcName();
@@ -579,12 +575,6 @@ consensus:         result.consensus
 };
 }
 
-// calcDetailFromGQL is used ONLY by the list view for arcs that have no cached
-// sessionStorage state yet (e.g. the operator has not yet visited the detail page).
-// v3.9.1: calcDetailFromGQL does NOT call consensusCalc; it returns a raw
-// calculation marked as preliminary. The list view prefers the sessionStorage
-// cache from the detail view whenever available.
-
 function calcDetailFromGQL(arcName, projected, workcells) {
 if (isExcludedArc(arcName)) return null;
 var avg = getAvg(arcName);
@@ -605,7 +595,7 @@ for (var i = 0; i < workcells.length; i++) {
 var wcName = (workcells[i].id && workcells[i].id.name) ? workcells[i].id.name : '';
 if (!containsPID(wcName)) alloc++;
 }
-console.log('[AllocRec] GQL raw | arc: ' + arcName + ' | rate: ' + avg + ' JPH | wip: ' + JSON.stringify(wip) + ' | alloc: ' + alloc);
+console.log('[AllocRec] GQL | arc: ' + arcName + ' | rate: ' + avg + ' JPH | wip: ' + JSON.stringify(wip) + ' | alloc: ' + alloc);
 var minA = 0;
 for (var i = 0; i < 4; i++) {
 if (wip[i] > 0) { minA = 1; break; }
@@ -620,21 +610,16 @@ if (w > 0) n = Math.round(w / hm[i] / avg);
 n = Math.max(n, minA);
 per.push({interval: intervals[i], needed: n, delta: n - alloc});
 }
-// Raw average of 1HR + 2HR + 4HR (no consensus gate, no stability rules)
-var oneHr  = per[2].needed;
-var twoHr  = per[3].needed;
-var fourHr = per[4].needed;
-var pn = Math.max(Math.round((oneHr + twoHr + fourHr) / 3), minA);
-var delta = pn - alloc;
+var result = consensusCalc(per, alloc, minA, arcName);
 return {
 currentAlloc:      alloc,
 containerizeRate:  avg,
 arcType:           getArcType(arcName),
 perInterval:       per,
-primaryDelta:      delta,
-primaryNeeded:     pn,
+primaryDelta:      result.primaryDelta,
+primaryNeeded:     result.primaryNeeded,
 minAlloc:          minA,
-consensus:         'preliminary'
+consensus:         result.consensus
 };
 }
 
@@ -658,9 +643,9 @@ return resp.json();
 }).then(function(json) {
 var arc = json && json.data && json.data.outboundArc;
 if (!arc) return null;
-var projected     = (arc.workState && arc.workState.rate && arc.workState.rate.projected) || [];
-var workcells     = arc.workcells || [];
-var aggregateRate = (arc.workState && arc.workState.rate) ? (arc.workState.rate.aggregateRate || 0) : 0;
+var projected      = (arc.workState && arc.workState.rate && arc.workState.rate.projected) || [];
+var workcells      = arc.workcells || [];
+var aggregateRate  = (arc.workState && arc.workState.rate) ? (arc.workState.rate.aggregateRate || 0) : 0;
 return {projected: projected, workcells: workcells, aggregateRate: aggregateRate};
 }).catch(function(e) {
 console.warn('[AllocRec] fetchArcData error for ' + arcName + ': ' + e);
@@ -717,9 +702,8 @@ badge.innerHTML = '\u25BC ' + d + ' allocation' + (Math.abs(d) > 1 ? 's' : '') +
 badge.className = 'no-change';
 badge.innerHTML = '\u2714 Allocations on target (' + rec.currentAlloc + ')';
 }
-// Render per-interval forecast row
 var label = document.getElementById('alloc-rec-forecast-label');
-var row   = document.getElementById('alloc-rec-forecast-row');
+var row = document.getElementById('alloc-rec-forecast-row');
 if (!rec.perInterval) {
 if (row) row.remove();
 if (label) label.remove();
@@ -801,18 +785,25 @@ return;
 }
 var rec = calcDetail();
 renderDetailBadge(rec);
-// v3.9.1: persist result to sessionStorage so list view can read it
 if (rec) {
 var arcName = getArcName();
-setStabilityState(arcName, {
-delta:                rec.primaryDelta,
-needed:               rec.primaryNeeded,
-alloc:                rec.currentAlloc,
-lastCheckTime:        Date.now(),
-pendingDecreaseCount: getDecreaseCount(arcName),
-consensus:            rec.consensus
-});
+setStabilityState(arcName, {delta: rec.primaryDelta, needed: rec.primaryNeeded, alloc: rec.currentAlloc, lastCheckTime: Date.now(), pendingDecreaseCount: getDecreaseCount(arcName), consensus: rec.consensus});
 }
+  // Update list cache entry for this arc so list view matches
+try {
+    var lc = JSON.parse(sessionStorage.getItem(LIST_CACHE_KEY) || '[]');
+    var arcName = getArcName();
+    var d = rec ? rec.primaryDelta : 0;
+    var cls = d > 0 ? 'up' : (d < 0 ? 'down' : 'same');
+    var text = d > 0 ? '\u25B2 +' + d : (d < 0 ? '\u25BC ' + d : '\u2714');
+    var title = rec ? ('Need ~' + rec.primaryNeeded + ', currently ' + rec.currentAlloc) : '';
+    var found = false;
+    for (var u = 0; u < lc.length; u++) {
+        if (lc[u].name === arcName) { lc[u] = {name: arcName, cls: cls, text: text, title: title}; found = true; break; }
+    }
+    if (!found) lc.push({name: arcName, cls: cls, text: text, title: title});
+    sessionStorage.setItem(LIST_CACHE_KEY, JSON.stringify(lc));
+} catch(e) {}
 console.log('[AllocRec] Detail refreshed | delta: ' + (rec ? rec.primaryDelta : 'null'));
 scheduleDetailRefresh();
 }
@@ -831,44 +822,24 @@ waitForShiftStart();
 return;
 }
 var arcName = getArcName();
-var ss  = getStabilityState(arcName);
+var ss = getStabilityState(arcName);
 var now = Date.now();
-// Use cached sessionStorage badge if within the 20-minute refresh window
 if (ss.delta !== null && (now - ss.lastCheckTime) < REFRESH_INTERVAL_MS) {
 console.log('[AllocRec] Detail using cached badge for ' + arcName + ' | delta: ' + ss.delta);
-renderDetailBadge({
-primaryDelta:   ss.delta,
-primaryNeeded:  ss.needed,
-currentAlloc:   ss.alloc,
-consensus:      ss.consensus
-});
-// Rebuild forecast row with a fresh DOM scrape since the badge is cached
-var rec = calcDetail();
-if (rec) renderDetailBadge(rec);
+renderDetailBadge({primaryDelta: ss.delta, primaryNeeded: ss.needed, currentAlloc: ss.alloc, consensus: ss.consensus});
 scheduleDetailRefresh();
 return;
 }
 var rec = calcDetail();
 renderDetailBadge(rec);
 if (rec) {
-setStabilityState(arcName, {
-delta:                rec.primaryDelta,
-needed:               rec.primaryNeeded,
-alloc:                rec.currentAlloc,
-lastCheckTime:        now,
-pendingDecreaseCount: getDecreaseCount(arcName),
-consensus:            rec.consensus
-});
+setStabilityState(arcName, {delta: rec.primaryDelta, needed: rec.primaryNeeded, alloc: rec.currentAlloc, lastCheckTime: now, pendingDecreaseCount: getDecreaseCount(arcName), consensus: rec.consensus});
 }
 console.log('[AllocRec] Detail initial render | delta: ' + (rec ? rec.primaryDelta : 'null'));
 scheduleDetailRefresh();
 }
 
 // --- LIST VIEW ------------------------------------------------------------
-// v3.9.1 KEY FIX: renderList now reads sessionStorage (written by detail view)
-// for each arc before falling back to a fresh GQL fetch + raw calculation.
-// This guarantees the list view always matches the detail view for arcs the
-// operator has already drilled into.
 
 var listRefreshTimer = null;
 
@@ -899,8 +870,45 @@ listLoaded = false;
 renderList();
 }
 
+function renderListFromCache(cache) {
+var rows = document.querySelectorAll('tr');
+for (var r = 0; r < rows.length; r++) {
+var cells = rows[r].querySelectorAll('td');
+if (cells.length < 5) continue;
+var name = cells[0].textContent.trim();
+for (var c = 0; c < cache.length; c++) {
+if (cache[c].name === name) {
+var old = rows[r].querySelector('.alloc-rec-list-badge');
+if (old) old.remove();
+var b = document.createElement('span');
+b.className = 'alloc-rec-list-badge ' + cache[c].cls;
+b.textContent = cache[c].text;
+b.title = cache[c].title;
+cells[4].appendChild(b);
+break;
+}
+}
+}
+}
+
 function renderList() {
 if (listLoaded) return;
+
+var now = Date.now();
+var lastFetch = parseInt(sessionStorage.getItem(LIST_CACHE_TIME_KEY) || '0', 10);
+var navigatedBack = !listLoaded;
+if (!navigatedBack && (now - lastFetch) < REFRESH_INTERVAL_MS) {
+try {
+var cached = JSON.parse(sessionStorage.getItem(LIST_CACHE_KEY));
+if (cached && cached.length > 0) {
+console.log('[AllocRec] List using cached results');
+renderListFromCache(cached);
+listLoaded = true;
+scheduleListRefresh();
+return;
+}
+} catch(e) {}
+}
 
 if (!document.getElementById('alloc-rec-list-settings-btn')) {
 var ah = findH2('arcs');
@@ -924,7 +932,7 @@ waitForShiftStart();
 return;
 }
 
-var rows = document.querySelectorAll('tr');
+var rows  = document.querySelectorAll('tr');
 console.log('[AllocRec] List | TRs: ' + rows.length);
 var arcRows = [];
 for (var r = 0; r < rows.length; r++) {
@@ -943,74 +951,27 @@ return;
 }
 listLoaded = true;
 
-// v3.9.1: separate arcs into cached (have sessionStorage state) and uncached
-var cachedArcs   = [];
-var uncachedArcs = [];
+if (!window._allocListCache) window._allocListCache = [];
+window._allocListCache = [];
+
 for (var i = 0; i < arcRows.length; i++) {
-var ss = getStabilityState(arcRows[i].name);
-var now = Date.now();
-if (ss.delta !== null && (now - ss.lastCheckTime) < REFRESH_INTERVAL_MS) {
-cachedArcs.push({arcRow: arcRows[i], ss: ss});
-} else {
-uncachedArcs.push(arcRows[i]);
-}
-}
-console.log('[AllocRec] List | cached: ' + cachedArcs.length + ' | uncached: ' + uncachedArcs.length);
-
-// Render cached arcs immediately from sessionStorage
-for (var i = 0; i < cachedArcs.length; i++) {
-var entry  = cachedArcs[i];
-var arcRow = entry.arcRow;
-var ss     = entry.ss;
-var oldBadge = arcRow.row.querySelector('.alloc-rec-list-badge');
-if (oldBadge) oldBadge.remove();
-var b = document.createElement('span');
-b.className = 'alloc-rec-list-badge';
-var delta = ss.delta;
-if (delta > 0) {
-b.className += ' up';
-b.textContent = '\u25B2 +' + delta;
-b.title = 'Need ~' + ss.needed + ', currently ' + ss.alloc + ' (cached from detail view)';
-} else if (delta < 0) {
-b.className += ' down';
-b.textContent = '\u25BC ' + delta;
-b.title = 'Need ~' + ss.needed + ', currently ' + ss.alloc + ' (cached from detail view)';
-} else {
-b.className += ' same';
-b.textContent = '\u2714';
-b.title = 'On target (' + ss.alloc + ') (cached from detail view)';
-}
-arcRow.aCell.appendChild(b);
-console.log('[AllocRec] List cached | ' + arcRow.name + ' | delta: ' + delta + ' | consensus: ' + ss.consensus);
-}
-
-// Show loading spinners for uncached arcs while GQL fetches run
-for (var i = 0; i < uncachedArcs.length; i++) {
-var oldBadge = uncachedArcs[i].row.querySelector('.alloc-rec-list-badge');
+var oldBadge = arcRows[i].row.querySelector('.alloc-rec-list-badge');
 if (oldBadge) oldBadge.remove();
 var lb = document.createElement('span');
 lb.className = 'alloc-rec-list-badge same';
 lb.textContent = '\u23F3';
 lb.title = 'Loading...';
-uncachedArcs[i].aCell.appendChild(lb);
-uncachedArcs[i].loadBadge = lb;
+arcRows[i].aCell.appendChild(lb);
+arcRows[i].loadBadge = lb;
 }
-
-if (uncachedArcs.length === 0) {
-scheduleListRefresh();
-return;
-}
-
-// Fetch GQL data for uncached arcs (preliminary, raw calc — no consensus gate)
 var siteName       = getSiteName();
 var pending        = 0;
 var MAX_CONCURRENT = 3;
 var idx            = 0;
 var completed      = 0;
-var total          = uncachedArcs.length;
-
+var total          = arcRows.length;
 function processNext() {
-while (pending < MAX_CONCURRENT && idx < uncachedArcs.length) {
+while (pending < MAX_CONCURRENT && idx < arcRows.length) {
 (function(arcRow) {
 pending++;
 fetchArcData(siteName, arcRow.name).then(function(data) {
@@ -1025,17 +986,7 @@ b.className += ' same';
 b.textContent = '\u2753';
 b.title = 'API error for ' + arcRow.name;
 } else {
-// v3.9.1: check sessionStorage one more time in case detail view ran
-// while GQL was in flight
-var ss2  = getStabilityState(arcRow.name);
-var now2 = Date.now();
-var rec;
-if (ss2.delta !== null && (now2 - ss2.lastCheckTime) < REFRESH_INTERVAL_MS) {
-rec = {primaryDelta: ss2.delta, primaryNeeded: ss2.needed,
-currentAlloc: ss2.alloc, consensus: ss2.consensus + ' (late-cache)'};
-} else {
-rec = calcDetailFromGQL(arcRow.name, data.projected, data.workcells);
-}
+var rec = calcDetailFromGQL(arcRow.name, data.projected, data.workcells);
 if (!rec) {
 b.className += ' same';
 b.textContent = '\u2753';
@@ -1056,16 +1007,21 @@ b.textContent = '\u2714';
 b.title = 'On target (' + rec.currentAlloc + ')';
 }
 console.log('[AllocRec] Row: ' + arcRow.name + ' | need: ' + rec.primaryNeeded + ' | alloc: ' + rec.currentAlloc + ' | delta: ' + delta + ' | consensus: ' + rec.consensus);
+    setStabilityState(arcRow.name, {delta: delta, needed: rec.primaryNeeded, alloc: rec.currentAlloc, lastCheckTime: Date.now(), pendingDecreaseCount: getDecreaseCount(arcRow.name), consensus: rec.consensus});
 }
 }
+window._allocListCache.push({name: arcRow.name, cls: b.className.replace('alloc-rec-list-badge ', ''), text: b.textContent, title: b.title});
 arcRow.aCell.appendChild(b);
 if (completed >= total) {
-console.log('[AllocRec] List batch complete (' + total + ' uncached arcs), scheduling refresh');
+console.log('[AllocRec] List batch complete (' + total + ' arcs), scheduling refresh');
+sessionStorage.setItem(LIST_CACHE_KEY, JSON.stringify(window._allocListCache || []));
+sessionStorage.setItem(LIST_CACHE_TIME_KEY, String(Date.now()));
+window._allocListCache = [];
 scheduleListRefresh();
 }
 processNext();
 });
-})(uncachedArcs[idx]);
+})(arcRows[idx]);
 idx++;
 }
 }
@@ -1105,7 +1061,10 @@ if (isList()) renderList();
 function startObs() {
 var obs = new MutationObserver(function() {
 clearTimeout(obs._db);
-obs._db = setTimeout(run, 1500);
+obs._db = setTimeout(function() {
+    if (isDetail()) run();
+    if (isList() && !listLoaded) run();
+}, 1500);
 });
 obs.observe(document.body, {childList: true, subtree: true, characterData: true});
 }
@@ -1152,3 +1111,4 @@ setTimeout(init, 1000);
 init();
 
 })();
+
