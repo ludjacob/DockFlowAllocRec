@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         DockFlow Allocation Recommender
 // @namespace    http://tampermonkey.net/
-// @version      3.9.1
+// @version      3.9.0
 // @description  Recommends allocation changes on OBA detail and Arcs list pages
 // @author       Jake
 // @match        https://prod-na.dockflow.robotics.a2z.com/*
@@ -74,32 +74,34 @@ var SOS_RAMP_MINUTES = 30;
 // --- STABILITY PERSISTENCE ------------------------------------------------
 // v3.9.1 KEY CHANGE: list view reads sessionStorage cache written by detail view.
 // This ensures both views always show the same recommendation for a given arc.
+
 var STABILITY_KEY = 'allocRec_stability_';
 var LIST_CACHE_KEY = 'allocRec_listCache';
 var LIST_CACHE_TIME_KEY = 'allocRec_listCacheTime';
 
 function getStabilityState(arcKey) {
-    try {
-        var raw = sessionStorage.getItem(STABILITY_KEY + arcKey);
-        if (raw) return JSON.parse(raw);
-    } catch(e) {}
-    return {delta: null, needed: null, alloc: null, lastCheckTime: 0, pendingDecreaseCount: 0, consensus: null};
+try {
+var raw = sessionStorage.getItem(STABILITY_KEY + arcKey);
+if (raw) return JSON.parse(raw);
+} catch(e) {}
+return {delta: null, needed: null, alloc: null, lastCheckTime: 0, pendingDecreaseCount: 0, consensus: null};
 }
 
 function setStabilityState(arcKey, state) {
-    sessionStorage.setItem(STABILITY_KEY + arcKey, JSON.stringify(state));
+sessionStorage.setItem(STABILITY_KEY + arcKey, JSON.stringify(state));
 }
 
 function getDecreaseCount(arcKey) {
-    try {
-        var raw = sessionStorage.getItem('allocRec_decCount_' + arcKey);
-        return raw ? parseInt(raw, 10) : 0;
-    } catch(e) { return 0; }
+try {
+var raw = sessionStorage.getItem('allocRec_decCount_' + arcKey);
+return raw ? parseInt(raw, 10) : 0;
+} catch(e) { return 0; }
 }
 
 function setDecreaseCount(arcKey, count) {
-    sessionStorage.setItem('allocRec_decCount_' + arcKey, String(count));
+sessionStorage.setItem('allocRec_decCount_' + arcKey, String(count));
 }
+
 // --- END STABILITY PERSISTENCE --------------------------------------------
 
 function isExcludedArc(name) {
@@ -514,34 +516,33 @@ var pn;
 var consensus;
 
 if (dir1 > 0 && dir2 > 0 && dir4 > 0) {
-    pn = alloc + 1;
-    consensus = 'increase';
-    setDecreaseCount(arcKey, 0);
+pn = alloc + 1;
+consensus = 'increase';
+setDecreaseCount(arcKey, 0);
 } else if (dir1 < 0 && dir2 < 0 && dir4 < 0) {
-    setDecreaseCount(arcKey, getDecreaseCount(arcKey) + 1);
-    if (getDecreaseCount(arcKey) >= 3) {
-        pn = alloc - 1;
-        pn = Math.max(pn, minA);
-        consensus = 'decrease';
-    } else {
-        pn = alloc;
-        consensus = 'pending-decrease (' + getDecreaseCount(arcKey) + '/3)';
-    }
+setDecreaseCount(arcKey, getDecreaseCount(arcKey) + 1);
+if (getDecreaseCount(arcKey) >= 3) {
+pn = alloc - 1;
+pn = Math.max(pn, minA);
+consensus = 'decrease';
 } else {
-    pn = alloc;
-    consensus = 'none';
-    setDecreaseCount(arcKey, 0);
+pn = alloc;
+consensus = 'pending-decrease (' + getDecreaseCount(arcKey) + '/3)';
+}
+} else {
+pn = alloc;
+consensus = 'none';
+setDecreaseCount(arcKey, 0);
 }
 
 var delta = clampDelta(pn - alloc);
 
 console.log('[AllocRec] Consensus | ' + arcKey + ' | 1HR=' + oneHr + ' 2HR=' + twoHr + ' 4HR=' + fourHr +
-    ' | dirs=' + dir1 + '/' + dir2 + '/' + dir4 +
-    ' | consensus=' + consensus + ' | target=' + pn + ' | delta=' + delta);
+' | dirs=' + dir1 + '/' + dir2 + '/' + dir4 +
+' | consensus=' + consensus + ' | target=' + pn + ' | delta=' + delta);
 
 return {primaryNeeded: pn, primaryDelta: delta, consensus: consensus};
 }
-
 
 function calcDetail() {
 var arcName = getArcName();
@@ -583,6 +584,7 @@ consensus:         result.consensus
 // v3.9.1: calcDetailFromGQL does NOT call consensusCalc; it returns a raw
 // calculation marked as preliminary. The list view prefers the sessionStorage
 // cache from the detail view whenever available.
+
 function calcDetailFromGQL(arcName, projected, workcells) {
 if (isExcludedArc(arcName)) return null;
 var avg = getAvg(arcName);
@@ -803,12 +805,12 @@ renderDetailBadge(rec);
 if (rec) {
 var arcName = getArcName();
 setStabilityState(arcName, {
-    delta:                rec.primaryDelta,
-    needed:               rec.primaryNeeded,
-    alloc:                rec.currentAlloc,
-    lastCheckTime:        Date.now(),
-    pendingDecreaseCount: getDecreaseCount(arcName),
-    consensus:            rec.consensus
+delta:                rec.primaryDelta,
+needed:               rec.primaryNeeded,
+alloc:                rec.currentAlloc,
+lastCheckTime:        Date.now(),
+pendingDecreaseCount: getDecreaseCount(arcName),
+consensus:            rec.consensus
 });
 }
 console.log('[AllocRec] Detail refreshed | delta: ' + (rec ? rec.primaryDelta : 'null'));
@@ -835,10 +837,10 @@ var now = Date.now();
 if (ss.delta !== null && (now - ss.lastCheckTime) < REFRESH_INTERVAL_MS) {
 console.log('[AllocRec] Detail using cached badge for ' + arcName + ' | delta: ' + ss.delta);
 renderDetailBadge({
-    primaryDelta:   ss.delta,
-    primaryNeeded:  ss.needed,
-    currentAlloc:   ss.alloc,
-    consensus:      ss.consensus
+primaryDelta:   ss.delta,
+primaryNeeded:  ss.needed,
+currentAlloc:   ss.alloc,
+consensus:      ss.consensus
 });
 // Rebuild forecast row with a fresh DOM scrape since the badge is cached
 var rec = calcDetail();
@@ -850,12 +852,12 @@ var rec = calcDetail();
 renderDetailBadge(rec);
 if (rec) {
 setStabilityState(arcName, {
-    delta:                rec.primaryDelta,
-    needed:               rec.primaryNeeded,
-    alloc:                rec.currentAlloc,
-    lastCheckTime:        now,
-    pendingDecreaseCount: getDecreaseCount(arcName),
-    consensus:            rec.consensus
+delta:                rec.primaryDelta,
+needed:               rec.primaryNeeded,
+alloc:                rec.currentAlloc,
+lastCheckTime:        now,
+pendingDecreaseCount: getDecreaseCount(arcName),
+consensus:            rec.consensus
 });
 }
 console.log('[AllocRec] Detail initial render | delta: ' + (rec ? rec.primaryDelta : 'null'));
@@ -1030,7 +1032,7 @@ var now2 = Date.now();
 var rec;
 if (ss2.delta !== null && (now2 - ss2.lastCheckTime) < REFRESH_INTERVAL_MS) {
 rec = {primaryDelta: ss2.delta, primaryNeeded: ss2.needed,
-       currentAlloc: ss2.alloc, consensus: ss2.consensus + ' (late-cache)'};
+currentAlloc: ss2.alloc, consensus: ss2.consensus + ' (late-cache)'};
 } else {
 rec = calcDetailFromGQL(arcRow.name, data.projected, data.workcells);
 }
