@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         DockFlow Allocation Recommender
 // @namespace    http://tampermonkey.net/
-// @version      3.8.0
+// @version      3.9.0
 // @description  Recommends allocation changes on OBA detail and Arcs list pages
 // @author       Jake
 // @match        https://prod-na.dockflow.robotics.a2z.com/*
@@ -67,7 +67,7 @@ nightShiftEnd: '05:00'
 
 var listLoaded = false;
 
-var EXCLUDED_ARCS = ['WMS_KICKOUT','KICKOUT', 'DZ-P'];
+var EXCLUDED_ARCS = ['WMS_KICKOUT', 'KICKOUT', 'DZ-P'];
 
 var SOS_RAMP_MINUTES = 30;
 
@@ -78,6 +78,24 @@ if (upper.indexOf(EXCLUDED_ARCS[i]) !== -1) return true;
 }
 return false;
 }
+
+// --- STABILITY PERSISTENCE ------------------------------------------------
+var STABILITY_KEY = 'allocRec_stability_';
+var LIST_CACHE_KEY = 'allocRec_listCache';
+var LIST_CACHE_TIME_KEY = 'allocRec_listCacheTime';
+
+function getStabilityState(arcKey) {
+try {
+var raw = sessionStorage.getItem(STABILITY_KEY + arcKey);
+if (raw) return JSON.parse(raw);
+} catch(e) {}
+return {delta: null, needed: null, alloc: null, lastCheckTime: 0, pendingDecreaseCount: 0, consensus: null};
+}
+
+function setStabilityState(arcKey, state) {
+sessionStorage.setItem(STABILITY_KEY + arcKey, JSON.stringify(state));
+}
+// --- END STABILITY PERSISTENCE --------------------------------------------
 
 var GRAPHQL_ENDPOINT = 'https://rtyxxulvlvberovj325a3rxppq.appsync-api.us-east-1.amazonaws.com/graphql';
 
@@ -151,10 +169,10 @@ function getActiveShiftEnd() {
 var cfg = getConfig();
 var now = new Date();
 var cur = now.getHours() * 60 + now.getMinutes();
-var dayStart = parseHHMM(cfg.dayShiftStart);
-var dayEnd = parseHHMM(cfg.dayShiftEnd);
+var dayStart  = parseHHMM(cfg.dayShiftStart);
+var dayEnd    = parseHHMM(cfg.dayShiftEnd);
 var nightStart = parseHHMM(cfg.nightShiftStart);
-var nightEnd = parseHHMM(cfg.nightShiftEnd);
+var nightEnd   = parseHHMM(cfg.nightShiftEnd);
 if (dayStart !== null && dayEnd !== null && cur >= dayStart && cur < dayEnd) {
 return dayEnd;
 }
@@ -190,7 +208,7 @@ function isInSosRamp() {
 var cfg = getConfig();
 var now = new Date();
 var cur = now.getHours() * 60 + now.getMinutes();
-var dayStart = parseHHMM(cfg.dayShiftStart);
+var dayStart   = parseHHMM(cfg.dayShiftStart);
 var nightStart = parseHHMM(cfg.nightShiftStart);
 if (dayStart !== null) {
 var elapsed = cur - dayStart;
@@ -438,21 +456,21 @@ ov.addEventListener('click', function(e) {
 if (e.target === ov) ov.remove();
 });
 document.getElementById('alloc-cfg-save').addEventListener('click', function() {
-var c = parseInt(document.getElementById('alloc-cfg-cases').value) || DEFAULTS.containerizeRateCase;
-var t = parseInt(document.getElementById('alloc-cfg-totes').value) || DEFAULTS.containerizeRateTote;
+var c   = parseInt(document.getElementById('alloc-cfg-cases').value) || DEFAULTS.containerizeRateCase;
+var t   = parseInt(document.getElementById('alloc-cfg-totes').value) || DEFAULTS.containerizeRateTote;
 var upt = parseFloat(document.getElementById('alloc-cfg-upt').value) || DEFAULTS.unitsPerTote;
-var ds = document.getElementById('alloc-cfg-ds').value.trim();
-var de = document.getElementById('alloc-cfg-de').value.trim();
-var ns = document.getElementById('alloc-cfg-ns').value.trim();
-var ne = document.getElementById('alloc-cfg-ne').value.trim();
+var ds  = document.getElementById('alloc-cfg-ds').value.trim();
+var de  = document.getElementById('alloc-cfg-de').value.trim();
+var ns  = document.getElementById('alloc-cfg-ns').value.trim();
+var ne  = document.getElementById('alloc-cfg-ne').value.trim();
 saveConfig({
-containerizeRateCase: c,
-containerizeRateTote: t,
-unitsPerTote: upt,
-dayShiftStart: ds,
-dayShiftEnd: de,
-nightShiftStart: ns,
-nightShiftEnd: ne
+containerizeRateCase:  c,
+containerizeRateTote:  t,
+unitsPerTote:          upt,
+dayShiftStart:         ds,
+dayShiftEnd:           de,
+nightShiftStart:       ns,
+nightShiftEnd:         ne
 });
 ov.remove();
 listLoaded = false;
@@ -469,38 +487,47 @@ run();
 // When no consensus, hold at on-target.
 // Decreases require 3 consecutive unanimous checks before firing.
 
-var decreaseConfirmCounts = {};
+function getDecreaseCount(arcKey) {
+try {
+var raw = sessionStorage.getItem('allocRec_decCount_' + arcKey);
+return raw ? parseInt(raw, 10) : 0;
+} catch(e) { return 0; }
+}
+
+function setDecreaseCount(arcKey, count) {
+sessionStorage.setItem('allocRec_decCount_' + arcKey, String(count));
+}
 
 function consensusCalc(perInterval, alloc, minA, arcKey) {
-var oneHr = perInterval[2].needed;
-var twoHr = perInterval[3].needed;
+var oneHr  = perInterval[2].needed;
+var twoHr  = perInterval[3].needed;
 var fourHr = perInterval[4].needed;
 
-var dir1 = oneHr > alloc ? 1 : (oneHr < alloc ? -1 : 0);
-var dir2 = twoHr > alloc ? 1 : (twoHr < alloc ? -1 : 0);
+var dir1 = oneHr  > alloc ? 1 : (oneHr  < alloc ? -1 : 0);
+var dir2 = twoHr  > alloc ? 1 : (twoHr  < alloc ? -1 : 0);
 var dir4 = fourHr > alloc ? 1 : (fourHr < alloc ? -1 : 0);
 
 var pn;
 var consensus;
 
 if (dir1 > 0 && dir2 > 0 && dir4 > 0) {
-    pn = alloc + 1;
-    consensus = 'increase';
-    decreaseConfirmCounts[arcKey] = 0;
+pn = alloc + 1;
+consensus = 'increase';
+setDecreaseCount(arcKey, 0);
 } else if (dir1 < 0 && dir2 < 0 && dir4 < 0) {
-    decreaseConfirmCounts[arcKey] = (decreaseConfirmCounts[arcKey] || 0) + 1;
-    if (decreaseConfirmCounts[arcKey] >= 3) {
-        pn = alloc - 1;
-        pn = Math.max(pn, minA);
-        consensus = 'decrease';
-    } else {
-        pn = alloc;
-        consensus = 'pending-decrease (' + decreaseConfirmCounts[arcKey] + '/3)';
-    }
+setDecreaseCount(arcKey, getDecreaseCount(arcKey) + 1);
+if (getDecreaseCount(arcKey) >= 3) {
+pn = alloc - 1;
+pn = Math.max(pn, minA);
+consensus = 'decrease';
 } else {
-    pn = alloc;
-    consensus = 'none';
-    decreaseConfirmCounts[arcKey] = 0;
+pn = alloc;
+consensus = 'pending-decrease (' + getDecreaseCount(arcKey) + '/3)';
+}
+} else {
+pn = alloc;
+consensus = 'none';
+setDecreaseCount(arcKey, 0);
 }
 
 var delta = clampDelta(pn - alloc);
@@ -616,9 +643,9 @@ return resp.json();
 }).then(function(json) {
 var arc = json && json.data && json.data.outboundArc;
 if (!arc) return null;
-var projected = (arc.workState && arc.workState.rate && arc.workState.rate.projected) || [];
-var workcells = arc.workcells || [];
-var aggregateRate = (arc.workState && arc.workState.rate) ? (arc.workState.rate.aggregateRate || 0) : 0;
+var projected      = (arc.workState && arc.workState.rate && arc.workState.rate.projected) || [];
+var workcells      = arc.workcells || [];
+var aggregateRate  = (arc.workState && arc.workState.rate) ? (arc.workState.rate.aggregateRate || 0) : 0;
 return {projected: projected, workcells: workcells, aggregateRate: aggregateRate};
 }).catch(function(e) {
 console.warn('[AllocRec] fetchArcData error for ' + arcName + ': ' + e);
@@ -675,6 +702,32 @@ badge.innerHTML = '\u25BC ' + d + ' allocation' + (Math.abs(d) > 1 ? 's' : '') +
 badge.className = 'no-change';
 badge.innerHTML = '\u2714 Allocations on target (' + rec.currentAlloc + ')';
 }
+var label = document.getElementById('alloc-rec-forecast-label');
+var row = document.getElementById('alloc-rec-forecast-row');
+if (!rec.perInterval) {
+if (row) row.remove();
+if (label) label.remove();
+return;
+}
+var box = findFutureBox();
+if (!box) return;
+if (!label) {
+label = document.createElement('div');
+label.id = 'alloc-rec-forecast-label';
+box.appendChild(label);
+}
+label.textContent = 'Needed Allocations (' + rec.containerizeRate + ' JPH ' + rec.arcType + ')';
+if (!row) {
+row = document.createElement('div');
+row.id = 'alloc-rec-forecast-row';
+box.appendChild(row);
+}
+var html = '';
+for (var i = 0; i < rec.perInterval.length; i++) {
+var p = rec.perInterval[i];
+html += '<div class="alloc-cell">' + p.needed + '</div>';
+}
+row.innerHTML = html;
 }
 
 function renderDetailPaused() {
@@ -732,6 +785,10 @@ return;
 }
 var rec = calcDetail();
 renderDetailBadge(rec);
+if (rec) {
+var arcName = getArcName();
+setStabilityState(arcName, {delta: rec.primaryDelta, needed: rec.primaryNeeded, alloc: rec.currentAlloc, lastCheckTime: Date.now(), pendingDecreaseCount: getDecreaseCount(arcName), consensus: rec.consensus});
+}
 console.log('[AllocRec] Detail refreshed | delta: ' + (rec ? rec.primaryDelta : 'null'));
 scheduleDetailRefresh();
 }
@@ -749,8 +806,20 @@ renderDetailPaused();
 waitForShiftStart();
 return;
 }
+var arcName = getArcName();
+var ss = getStabilityState(arcName);
+var now = Date.now();
+if (ss.delta !== null && (now - ss.lastCheckTime) < REFRESH_INTERVAL_MS) {
+console.log('[AllocRec] Detail using cached badge for ' + arcName + ' | delta: ' + ss.delta);
+renderDetailBadge({primaryDelta: ss.delta, primaryNeeded: ss.needed, currentAlloc: ss.alloc, consensus: ss.consensus});
+scheduleDetailRefresh();
+return;
+}
 var rec = calcDetail();
 renderDetailBadge(rec);
+if (rec) {
+setStabilityState(arcName, {delta: rec.primaryDelta, needed: rec.primaryNeeded, alloc: rec.currentAlloc, lastCheckTime: now, pendingDecreaseCount: getDecreaseCount(arcName), consensus: rec.consensus});
+}
 console.log('[AllocRec] Detail initial render | delta: ' + (rec ? rec.primaryDelta : 'null'));
 scheduleDetailRefresh();
 }
@@ -786,8 +855,44 @@ listLoaded = false;
 renderList();
 }
 
+function renderListFromCache(cache) {
+var rows = document.querySelectorAll('tr');
+for (var r = 0; r < rows.length; r++) {
+var cells = rows[r].querySelectorAll('td');
+if (cells.length < 5) continue;
+var name = cells[0].textContent.trim();
+for (var c = 0; c < cache.length; c++) {
+if (cache[c].name === name) {
+var old = rows[r].querySelector('.alloc-rec-list-badge');
+if (old) old.remove();
+var b = document.createElement('span');
+b.className = 'alloc-rec-list-badge ' + cache[c].cls;
+b.textContent = cache[c].text;
+b.title = cache[c].title;
+cells[4].appendChild(b);
+break;
+}
+}
+}
+}
+
 function renderList() {
 if (listLoaded) return;
+
+var now = Date.now();
+var lastFetch = parseInt(sessionStorage.getItem(LIST_CACHE_TIME_KEY) || '0', 10);
+if ((now - lastFetch) < 120000) {
+try {
+var cached = JSON.parse(sessionStorage.getItem(LIST_CACHE_KEY));
+if (cached && cached.length > 0) {
+console.log('[AllocRec] List using cached results');
+renderListFromCache(cached);
+listLoaded = true;
+scheduleListRefresh();
+return;
+}
+} catch(e) {}
+}
 
 if (!document.getElementById('alloc-rec-list-settings-btn')) {
 var ah = findH2('arcs');
@@ -829,6 +934,10 @@ scheduleListRefresh();
 return;
 }
 listLoaded = true;
+
+if (!window._allocListCache) window._allocListCache = [];
+window._allocListCache = [];
+
 for (var i = 0; i < arcRows.length; i++) {
 var oldBadge = arcRows[i].row.querySelector('.alloc-rec-list-badge');
 if (oldBadge) oldBadge.remove();
@@ -884,9 +993,13 @@ b.title = 'On target (' + rec.currentAlloc + ')';
 console.log('[AllocRec] Row: ' + arcRow.name + ' | need: ' + rec.primaryNeeded + ' | alloc: ' + rec.currentAlloc + ' | delta: ' + delta + ' | consensus: ' + rec.consensus);
 }
 }
+window._allocListCache.push({name: arcRow.name, cls: b.className.replace('alloc-rec-list-badge ', ''), text: b.textContent, title: b.title});
 arcRow.aCell.appendChild(b);
 if (completed >= total) {
 console.log('[AllocRec] List batch complete (' + total + ' arcs), scheduling refresh');
+sessionStorage.setItem(LIST_CACHE_KEY, JSON.stringify(window._allocListCache || []));
+sessionStorage.setItem(LIST_CACHE_TIME_KEY, String(Date.now()));
+window._allocListCache = [];
 scheduleListRefresh();
 }
 processNext();
