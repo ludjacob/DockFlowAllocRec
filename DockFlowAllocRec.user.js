@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         DockFlow Allocation Recommender
 // @namespace    http://tampermonkey.net/
-// @version      3.9.0
+// @version      3.9.2
 // @description  Recommends allocation changes on OBA detail and Arcs list pages
 // @author       Jake
 // @match        https://prod-na.dockflow.robotics.a2z.com/*
