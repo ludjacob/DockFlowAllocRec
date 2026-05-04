@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         DockFlow Allocation Recommender
 // @namespace    http://tampermonkey.net/
-// @version      3.9.2
+// @version      3.9.5
 // @description  Recommends allocation changes on OBA detail and Arcs list pages
 // @author       Jake
 // @match        https://prod-na.dockflow.robotics.a2z.com/*
@@ -308,93 +308,6 @@ if (h2s[i].textContent.toLowerCase().indexOf(text.toLowerCase()) !== -1) return 
 return null;
 }
 
-function scrapeFuture() {
-var h = findCSHeading('Future');
-if (!h) return null;
-var box = h.closest('[class*="content-wrapper"]');
-if (!box) {
-box = h;
-for (var i = 0; i < 6; i++) {
-box = box.parentElement;
-if (!box) return null;
-if (box.className && box.className.indexOf('content-wrapper') !== -1) break;
-}
-}
-var els = box.querySelectorAll('*');
-var nums = [];
-for (var i = 0; i < els.length; i++) {
-if (/^\d+$/.test(els[i].textContent.trim()) && els[i].children.length === 0) {
-nums.push(els[i]);
-}
-}
-if (nums.length >= 7) {
-var r = [];
-for (var i = 0; i < 7; i++) r.push(parseInt(nums[i].textContent.trim()));
-return r;
-}
-return null;
-}
-
-function scrapeAlloc() {
-var assignH2 = findAssignH2();
-if (assignH2) {
-var container = assignH2.closest('[class*="content-wrapper"]');
-if (!container) {
-container = assignH2;
-for (var i = 0; i < 8; i++) {
-container = container.parentElement;
-if (!container) break;
-if (container.className && container.className.indexOf('content-wrapper') !== -1) break;
-}
-}
-if (container) {
-var allEls = container.querySelectorAll('*');
-var cur = 0;
-for (var i = 0; i < allEls.length; i++) {
-var el = allEls[i];
-if (el.children.length > 0) continue;
-var txt = el.textContent.trim();
-if (txt.toLowerCase() === 'sorterlane') {
-var nameEl = el.previousElementSibling ||
-(el.parentElement ? el.parentElement.previousElementSibling : null);
-if (!nameEl && el.parentElement) {
-var siblings = el.parentElement.querySelectorAll('*');
-for (var j = 0; j < siblings.length; j++) {
-if (siblings[j].textContent.trim().toLowerCase() !== 'sorterlane' &&
-siblings[j].children.length === 0 &&
-siblings[j].textContent.trim().length > 2) {
-nameEl = siblings[j];
-break;
-}
-}
-}
-var wcName = nameEl ? nameEl.textContent.trim() : '';
-if (!containsPID(wcName)) cur++;
-}
-}
-if (cur > 0) {
-console.log('[AllocRec] scrapeAlloc scoped count: ' + cur);
-return cur;
-}
-}
-}
-var spans = document.querySelectorAll('span[class*="counter"]');
-for (var i = 0; i < spans.length; i++) {
-var prev = spans[i].previousElementSibling;
-if (prev && (/Arc Assignments/i).test(prev.textContent)) {
-var m = spans[i].textContent.match(/(\d+)/);
-if (m) return parseInt(m[1]);
-}
-}
-var all = document.querySelectorAll('*');
-for (var i = 0; i < all.length; i++) {
-var el = all[i];
-var txt = el.textContent.trim();
-var m = txt.match(/Arc Assignments\s*\((\d+)\)/i);
-if (m && el.children.length < 5) return parseInt(m[1]);
-}
-return null;
-}
 
 function findAssignH2() {
 var h = findCSHeading('Arc Assignments');
@@ -540,40 +453,7 @@ return {primaryNeeded: pn, primaryDelta: delta, consensus: consensus};
 }
 
 
-function calcDetail() {
-var arcName = getArcName();
-if (isExcludedArc(arcName)) return null;
-var avg = getAvg(arcName);
-var wip = scrapeFuture();
-var alloc = scrapeAlloc();
-console.log('[AllocRec] Detail | arc: ' + arcName + ' | type: ' + getArcType(arcName) + ' | rate: ' + avg + ' JPH | wip: ' + JSON.stringify(wip) + ' | alloc: ' + alloc);
-if (!wip || alloc === null) return null;
-var minA = 0;
-for (var i = 0; i < 4; i++) {
-if (wip[i] > 0) { minA = 1; break; }
-}
-var intervals = ['15 MIN', '30 MIN', '1 HR', '2 HR', '4 HR', '8 HR', '24 HR'];
-var hm = [0.25, 0.5, 1, 2, 4, 8, 24];
-var per = [];
-for (var i = 0; i < wip.length; i++) {
-var n = 0;
-var w = (getArcType(arcName) === 'TOTE') ? wip[i] / getConfig().unitsPerTote : wip[i];
-if (w > 0) n = Math.round(w / hm[i] / avg);
-n = Math.max(n, minA);
-per.push({interval: intervals[i], needed: n, delta: n - alloc});
-}
-var result = consensusCalc(per, alloc, minA, arcName);
-return {
-currentAlloc:      alloc,
-containerizeRate:  avg,
-arcType:           getArcType(arcName),
-perInterval:       per,
-primaryDelta:      result.primaryDelta,
-primaryNeeded:     result.primaryNeeded,
-minAlloc:          minA,
-consensus:         result.consensus
-};
-}
+
 
 function calcDetailFromGQL(arcName, projected, workcells) {
 if (isExcludedArc(arcName)) return null;
@@ -771,44 +651,49 @@ waitForShiftStart();
 }, 60000);
 }
 
-function runDetailRefresh() {
-if (!isInActiveShift()) {
-console.log('[AllocRec] Outside shift hours, pausing');
-renderDetailPaused();
-waitForShiftStart();
-return;
-}
-if (isInAutoFreeze()) {
-console.log('[AllocRec] Auto-freeze active, holding badge');
-scheduleDetailRefresh();
-return;
-}
-var rec = calcDetail();
-renderDetailBadge(rec);
-if (rec) {
-var arcName = getArcName();
-setStabilityState(arcName, {delta: rec.primaryDelta, needed: rec.primaryNeeded, alloc: rec.currentAlloc, lastCheckTime: Date.now(), pendingDecreaseCount: getDecreaseCount(arcName), consensus: rec.consensus});
-}
-  // Update list cache entry for this arc so list view matches
-try {
-    var lc = JSON.parse(sessionStorage.getItem(LIST_CACHE_KEY) || '[]');
-    var arcName = getArcName();
-    var d = rec ? rec.primaryDelta : 0;
-    var cls = d > 0 ? 'up' : (d < 0 ? 'down' : 'same');
-    var text = d > 0 ? '\u25B2 +' + d : (d < 0 ? '\u25BC ' + d : '\u2714');
-    var title = rec ? ('Need ~' + rec.primaryNeeded + ', currently ' + rec.currentAlloc) : '';
-    var found = false;
-    for (var u = 0; u < lc.length; u++) {
-        if (lc[u].name === arcName) { lc[u] = {name: arcName, cls: cls, text: text, title: title}; found = true; break; }
+    function runDetailRefresh() {
+    detailRefreshTimer = null;
+    if (!isInActiveShift()) {
+        console.log('[AllocRec] Detail refresh outside shift, pausing');
+        renderDetailPaused();
+        waitForShiftStart();
+        return;
     }
-    if (!found) lc.push({name: arcName, cls: cls, text: text, title: title});
-    sessionStorage.setItem(LIST_CACHE_KEY, JSON.stringify(lc));
-} catch(e) {}
-console.log('[AllocRec] Detail refreshed | delta: ' + (rec ? rec.primaryDelta : 'null'));
-scheduleDetailRefresh();
+    if (isInAutoFreeze()) {
+        console.log('[AllocRec] Detail refresh auto-freeze, holding');
+        scheduleDetailRefresh();
+        return;
+    }
+    var arcName = getArcName();
+    var siteName = getSiteName();
+    fetchArcData(siteName, arcName).then(function(data) {
+        var rec = null;
+        if (data) {
+            rec = calcDetailFromGQL(arcName, data.projected, data.workcells);
+        }
+        renderDetailBadge(rec);
+        if (rec) {
+            setStabilityState(arcName, {delta: rec.primaryDelta, needed: rec.primaryNeeded, alloc: rec.currentAlloc, lastCheckTime: Date.now(), pendingDecreaseCount: getDecreaseCount(arcName), consensus: rec.consensus});
+        }
+        try {
+            var lc = JSON.parse(sessionStorage.getItem(LIST_CACHE_KEY) || '[]');
+            var d = rec ? rec.primaryDelta : 0;
+            var cls = d > 0 ? 'up' : (d < 0 ? 'down' : 'same');
+            var text = d > 0 ? '\u25B2 +' + d : (d < 0 ? '\u25BC ' + d : '\u2714');
+            var title = rec ? ('Need ~' + rec.primaryNeeded + ', currently ' + rec.currentAlloc) : '';
+            var found = false;
+            for (var u = 0; u < lc.length; u++) {
+                if (lc[u].name === arcName) { lc[u] = {name: arcName, cls: cls, text: text, title: title}; found = true; break; }
+            }
+            if (!found) lc.push({name: arcName, cls: cls, text: text, title: title});
+            sessionStorage.setItem(LIST_CACHE_KEY, JSON.stringify(lc));
+        } catch(e) {}
+        console.log('[AllocRec] Detail refreshed via GQL | delta: ' + (rec ? rec.primaryDelta : 'null'));
+        scheduleDetailRefresh();
+    });
 }
 
-function scheduleDetailRefresh() {
+    function scheduleDetailRefresh() {
 clearDetailTimer();
 detailRefreshTimer = setTimeout(runDetailRefresh, REFRESH_INTERVAL_MS);
 }
@@ -830,13 +715,20 @@ renderDetailBadge({primaryDelta: ss.delta, primaryNeeded: ss.needed, currentAllo
 scheduleDetailRefresh();
 return;
 }
-var rec = calcDetail();
-renderDetailBadge(rec);
-if (rec) {
-setStabilityState(arcName, {delta: rec.primaryDelta, needed: rec.primaryNeeded, alloc: rec.currentAlloc, lastCheckTime: now, pendingDecreaseCount: getDecreaseCount(arcName), consensus: rec.consensus});
-}
-console.log('[AllocRec] Detail initial render | delta: ' + (rec ? rec.primaryDelta : 'null'));
-scheduleDetailRefresh();
+    var siteName = getSiteName();
+    fetchArcData(siteName, arcName).then(function(data) {
+        var rec = null;
+        if (data) {
+            rec = calcDetailFromGQL(arcName, data.projected, data.workcells);
+        }
+        renderDetailBadge(rec);
+        if (rec) {
+            setStabilityState(arcName, {delta: rec.primaryDelta, needed: rec.primaryNeeded, alloc: rec.currentAlloc, lastCheckTime: Date.now(), pendingDecreaseCount: getDecreaseCount(arcName), consensus: rec.consensus});
+        }
+        console.log('[AllocRec] Detail initial render via GQL | delta: ' + (rec ? rec.primaryDelta : 'null'));
+        scheduleDetailRefresh();
+    });
+
 }
 
 // --- LIST VIEW ------------------------------------------------------------
@@ -1074,9 +966,8 @@ cleanup();
 console.log('[AllocRec] init | path: ' + path);
 var ck = setInterval(function() {
 if (isDetail()) {
-var h = findAssignH2();
-var w = scrapeFuture();
-if (h && (w || !isInActiveShift())) {
+    var h = findAssignH2();
+    if (h) {
 clearInterval(ck);
 console.log('[AllocRec] Detail ready');
 run();
