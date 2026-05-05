@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         DockFlow Allocation Recommender
 // @namespace    http://tampermonkey.net/
-// @version      3.9.5
+// @version      3.9.6
 // @description  Recommends allocation changes on OBA detail and Arcs list pages
 // @author       Jake
 // @match        https://prod-na.dockflow.robotics.a2z.com/*
@@ -955,7 +955,10 @@ var obs = new MutationObserver(function() {
 clearTimeout(obs._db);
 obs._db = setTimeout(function() {
     if (isDetail()) run();
-    if (isList() && !listLoaded) run();
+    if (isList()) {
+    var badges = document.querySelectorAll('.alloc-rec-list-badge');
+    if (badges.length === 0) { listLoaded = false; run(); }
+}
 }, 1500);
 });
 obs.observe(document.body, {childList: true, subtree: true, characterData: true});
